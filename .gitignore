@@ -35,6 +35,10 @@ gemini_*.txt
 circuit_config.json
 verify_circuit.py
 test_led.py
+app.py
+static/
+templates/
+SUNRISE_ALARM_PROJECT.md
 
 # Claude Code
 .claude/
