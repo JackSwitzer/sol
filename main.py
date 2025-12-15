@@ -143,10 +143,10 @@ def show_sunrise_complete():
     now = datetime.now()
     msg3 = f"☀ {now.strftime('%A, %B %d')} • {now.strftime('%H:%M')}"
 
-    # Get terminal size
+    # Get terminal size (leave 1 line buffer to prevent scroll)
     term_size = shutil.get_terminal_size()
     width = term_size.columns
-    height = term_size.lines
+    height = term_size.lines - 1
 
     # Calculate positions
     msg_row = height // 2  # Where text will appear
@@ -165,10 +165,10 @@ def show_sunrise_complete():
     # Track which messages have been revealed
     revealed = [False, False, False]
 
-    for frame in range(total_frames + 10):  # Extra frames to hold at end
+    for frame in range(total_frames + 1):
         term_size = shutil.get_terminal_size()
         width = term_size.columns
-        height = term_size.lines
+        height = term_size.lines - 1  # Leave 1 line buffer to prevent scroll
 
         sun_row = max(end_pos, start_pos - frame)
 

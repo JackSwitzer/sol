@@ -36,6 +36,14 @@ Light suppresses melatonin and raises cortisol naturally. No jarring alarms.
 
 See [docs/SETUP.md](docs/SETUP.md) for detailed setup, profiles, and MCP server config.
 
+## Roadmap
+
+- [ ] Logo improvements (glow/pulse effect, animated rays)
+- [ ] Weather integration (clouds, rain effects)
+- [ ] Multiple bulb support
+- [ ] Web UI for scheduling
+- [ ] Raspberry Pi systemd service
+
 ## License
 
 MIT
