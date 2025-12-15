@@ -14,6 +14,92 @@ import math
 from datetime import datetime, timedelta
 from pathlib import Path
 from kasa import Discover, Device, Module
+from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
+from rich.live import Live
+from rich.align import Align
+from rich import print as rprint
+
+console = Console()
+
+# ASCII Sun art
+SUN_ART = """
+[yellow]        \\   |   /
+         \\  |  /
+      ────[bold orange1]☀[/bold orange1]────
+         /  |  \\
+        /   |   \\[/yellow]
+"""
+
+SUN_RISE_FRAMES = [
+    # Frame 1 - just peeking
+    """
+[dim]━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/dim]
+[orange1]        ⠀⠀⣀⣀⣀⠀⠀[/orange1]
+[yellow]░░░░░░░░░░░░░░░░░░░░░░░░░░░░[/yellow]""",
+    # Frame 2 - rising
+    """
+[orange1]          \\  |  /[/orange1]
+[yellow]        ── ☀ ──[/yellow]
+[yellow]░░░░░░░░░░░░░░░░░░░░░░░░░░░░[/yellow]""",
+    # Frame 3 - full sun
+    """
+[yellow]        \\   |   /
+         \\  |  /
+      ────[bold orange1]☀[/bold orange1]────
+         /  |  \\
+        /   |   \\[/yellow]"""
+]
+
+def show_sunrise_complete():
+    """Display the epic sunrise completion message."""
+    console.clear()
+
+    sun_text = Text()
+    sun_text.append("        \\   |   /\n", style="yellow")
+    sun_text.append("         \\  |  /\n", style="yellow")
+    sun_text.append("      ────", style="yellow")
+    sun_text.append("☀", style="bold orange1")
+    sun_text.append("────\n", style="yellow")
+    sun_text.append("         /  |  \\\n", style="yellow")
+    sun_text.append("        /   |   \\\n", style="yellow")
+
+    console.print()
+    console.print(Align.center(sun_text))
+    console.print()
+
+    # Main message
+    title = Text("Welcome to the Game of Today, Jack!", style="bold yellow")
+    subtitle = Text("And may the discipline be ever in your favour...", style="italic orange1")
+
+    console.print(Align.center(title))
+    console.print()
+    console.print(Align.center(subtitle))
+    console.print()
+
+    # Time
+    now = datetime.now()
+    time_text = Text(f"☀ {now.strftime('%A, %B %d')} • {now.strftime('%H:%M')}", style="dim")
+    console.print(Align.center(time_text))
+    console.print()
+
+
+def show_progress(phase: int, total_phases: int, brightness: int, temp: int):
+    """Show live progress during sunrise."""
+    bar_width = 30
+    filled = int((brightness / 100) * bar_width)
+    bar = "█" * filled + "░" * (bar_width - filled)
+
+    # Color based on progress
+    if brightness < 30:
+        color = "red"
+    elif brightness < 60:
+        color = "orange1"
+    else:
+        color = "yellow"
+
+    console.print(f"  [{color}]{bar}[/{color}] {brightness:3d}% • {temp}K", end="\r")
 
 # Default configuration
 DEFAULT_BULB_IP = "192.168.1.77"
@@ -152,13 +238,18 @@ async def run_sunrise(ip: str, profile: str = "standard", verbose: bool = True):
 
             await light.set_brightness(brightness)
             await light.set_color_temp(temp)
+
+            # Show progress
+            if verbose:
+                show_progress(phase_idx + 1, len(phases), brightness, temp)
+
             await asyncio.sleep(delay)
 
         elapsed += phase_duration
 
     if verbose:
-        print()
-        print("Good morning! Sunrise complete.")
+        print()  # Clear the progress line
+        show_sunrise_complete()
 
 
 async def run_demo(ip: str):
@@ -234,18 +325,19 @@ async def schedule_sunrise(wake_time: str, ip: str, profile: str):
     now = datetime.now()
     wake_dt = now.replace(hour=wake_hour, minute=wake_minute, second=0, microsecond=0)
 
-    # If wake time already passed today, schedule for tomorrow
+    # If start time already passed today, schedule for tomorrow
     if wake_dt <= now:
         wake_dt += timedelta(days=1)
 
-    # Sunrise should START before wake time (so it completes at wake time)
-    start_dt = wake_dt - timedelta(minutes=duration_minutes)
+    # Time specified is when sunrise STARTS
+    start_dt = wake_dt
+    end_dt = wake_dt + timedelta(minutes=duration_minutes)
     wait_seconds = (start_dt - now).total_seconds()
 
     print(f"Sunrise Alarm Scheduled")
     print(f"  Profile:        {config['name']}")
-    print(f"  Wake time:      {wake_dt.strftime('%Y-%m-%d %H:%M')}")
-    print(f"  Sunrise starts: {start_dt.strftime('%H:%M')} ({duration_minutes} min before)")
+    print(f"  Starts at:      {start_dt.strftime('%Y-%m-%d %H:%M')}")
+    print(f"  Completes at:   {end_dt.strftime('%H:%M')} ({duration_minutes} min later)")
     print(f"  Waiting:        {wait_seconds / 60:.1f} minutes ({wait_seconds / 3600:.1f} hours)")
     print()
     print("Press Ctrl+C to cancel")
