@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv/
+venv/
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project secrets & local config
+.mcp.json
+*.local.json
+
+# Lock files (optional - uncomment if you want to track)
+# uv.lock
+
+# Temporary/experimental files
+gemini_*.py
+gemini_*.html
+gemini_*.txt
+circuit_config.json
+verify_circuit.py
+test_led.py
+
+# Claude Code
+.claude/
