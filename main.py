@@ -138,8 +138,8 @@ def show_sunrise_complete():
     sun_height = len(sun_art)
 
     # Messages
-    msg1 = "Welcome to the Game of Today, Jack!"
-    msg2 = "And may the discipline be ever in your favour..."
+    msg1 = "Let there be light."
+    msg2 = "Good Morning Jack, welcome to the game!"
     now = datetime.now()
     msg3 = f"☀ {now.strftime('%A, %B %d')} • {now.strftime('%H:%M')}"
 
@@ -456,8 +456,86 @@ async def run_demo(ip: str):
     print("Demo complete! Light off.")
 
 
+def show_waiting_screen(start_dt: datetime, end_dt: datetime, profile_name: str):
+    """Show full-screen waiting display with countdown."""
+    import shutil
+
+    term_size = shutil.get_terminal_size()
+    width = term_size.columns
+    height = term_size.lines - 1
+
+    now = datetime.now()
+    wait_seconds = (start_dt - now).total_seconds()
+    total_wait = (start_dt - (start_dt - timedelta(seconds=wait_seconds))).total_seconds()
+
+    # Progress (inverted - starts full, empties as we approach)
+    if total_wait > 0:
+        progress = max(0, wait_seconds / total_wait)
+    else:
+        progress = 0
+
+    border_color = "dim yellow"
+    sky_bg = "grey11"
+
+    console.clear()
+
+    # Top border
+    console.print("█" * width, style=border_color, end="")
+
+    msg_row = height // 2 - 3
+
+    for row in range(1, height - 1):
+        console.print("█", style=border_color, end="")
+
+        if row == msg_row - 2:
+            msg = "☽ Sol - Sunrise Alarm"
+            pad = (width - 2 - len(msg)) // 2
+            console.print(" " * pad, style=f"on {sky_bg}", end="")
+            console.print(msg, style=f"dim yellow on {sky_bg}", end="")
+            console.print(" " * (width - 2 - pad - len(msg)), style=f"on {sky_bg}", end="")
+        elif row == msg_row:
+            msg = f"Sunrise at {start_dt.strftime('%H:%M')} → Complete by {end_dt.strftime('%H:%M')}"
+            pad = (width - 2 - len(msg)) // 2
+            console.print(" " * pad, style=f"on {sky_bg}", end="")
+            console.print(msg, style=f"orange1 on {sky_bg}", end="")
+            console.print(" " * (width - 2 - pad - len(msg)), style=f"on {sky_bg}", end="")
+        elif row == msg_row + 2:
+            # Countdown
+            hours = int(wait_seconds // 3600)
+            mins = int((wait_seconds % 3600) // 60)
+            secs = int(wait_seconds % 60)
+            msg = f"T-{hours:02d}:{mins:02d}:{secs:02d}"
+            pad = (width - 2 - len(msg)) // 2
+            console.print(" " * pad, style=f"on {sky_bg}", end="")
+            console.print(msg, style=f"bold bright_yellow on {sky_bg}", end="")
+            console.print(" " * (width - 2 - pad - len(msg)), style=f"on {sky_bg}", end="")
+        elif row == msg_row + 4:
+            # Progress bar
+            bar_width = min(40, width - 10)
+            filled = int(bar_width * (1 - progress))  # Fills up as time passes
+            bar = "█" * filled + "░" * (bar_width - filled)
+            msg = f"[{bar}]"
+            pad = (width - 2 - len(msg)) // 2
+            console.print(" " * pad, style=f"on {sky_bg}", end="")
+            console.print(msg, style=f"yellow on {sky_bg}", end="")
+            console.print(" " * (width - 2 - pad - len(msg)), style=f"on {sky_bg}", end="")
+        elif row == msg_row + 6:
+            msg = "Press Ctrl+C to cancel"
+            pad = (width - 2 - len(msg)) // 2
+            console.print(" " * pad, style=f"on {sky_bg}", end="")
+            console.print(msg, style=f"dim on {sky_bg}", end="")
+            console.print(" " * (width - 2 - pad - len(msg)), style=f"on {sky_bg}", end="")
+        else:
+            console.print(" " * (width - 2), style=f"on {sky_bg}", end="")
+
+        console.print("█", style=border_color, end="")
+
+    # Bottom border
+    console.print("█" * width, style=border_color, end="")
+
+
 async def schedule_sunrise(wake_time: str, ip: str, profile: str):
-    """Schedule sunrise to complete at the specified wake time."""
+    """Schedule sunrise with live countdown display."""
     try:
         wake_hour, wake_minute = map(int, wake_time.split(":"))
     except ValueError:
@@ -477,19 +555,13 @@ async def schedule_sunrise(wake_time: str, ip: str, profile: str):
     # Time specified is when sunrise STARTS
     start_dt = wake_dt
     end_dt = wake_dt + timedelta(minutes=duration_minutes)
-    wait_seconds = (start_dt - now).total_seconds()
 
-    print(f"Sunrise Alarm Scheduled")
-    print(f"  Profile:        {config['name']}")
-    print(f"  Starts at:      {start_dt.strftime('%Y-%m-%d %H:%M')}")
-    print(f"  Completes at:   {end_dt.strftime('%H:%M')} ({duration_minutes} min later)")
-    print(f"  Waiting:        {wait_seconds / 60:.1f} minutes ({wait_seconds / 3600:.1f} hours)")
-    print()
-    print("Press Ctrl+C to cancel")
+    # Show countdown until sunrise
+    while datetime.now() < start_dt:
+        show_waiting_screen(start_dt, end_dt, config['name'])
+        await asyncio.sleep(1)
 
-    if wait_seconds > 0:
-        await asyncio.sleep(wait_seconds)
-
+    # Run the actual sunrise (bulb + terminal animation synced)
     await run_sunrise(ip, profile)
 
 
@@ -576,6 +648,16 @@ async def cmd_test_ui(args):
         show_sunrise_complete()
         return
 
+    if args.waiting:
+        # Test waiting screen for 10 seconds
+        start = datetime.now() + timedelta(seconds=10)
+        end = start + timedelta(minutes=30)
+        for _ in range(10):
+            show_waiting_screen(start, end, "Test")
+            time.sleep(1)
+        show_sunrise_complete()
+        return
+
     console.print("[dim]Testing progress bar...[/dim]\n")
 
     # Simulate sunrise progress
@@ -656,6 +738,8 @@ Profiles: standard (30min), quick (20min), gentle (45min), ablation_day1/2/3
     test_ui_parser = subparsers.add_parser("test-ui", help="Test terminal UI in isolation")
     test_ui_parser.add_argument("-c", "--complete-only", action="store_true",
                                  help="Only show completion screen")
+    test_ui_parser.add_argument("-w", "--waiting", action="store_true",
+                                 help="Test waiting/countdown screen")
     test_ui_parser.set_defaults(func=cmd_test_ui)
 
     args = parser.parse_args()

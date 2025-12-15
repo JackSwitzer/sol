@@ -4,7 +4,7 @@
 
 Wake up gently with science-backed sunrise simulation using Kasa smart bulbs.
 
-<!-- TODO: Add demo gif here -->
+![Sol Sunrise Animation](assets/sunrise.gif)
 
 ## Quick Start
 
