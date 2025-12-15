@@ -23,66 +23,211 @@ from rich import print as rprint
 
 console = Console()
 
-# ASCII Sun art
-SUN_ART = """
-[yellow]        \\   |   /
-         \\  |  /
-      ────[bold orange1]☀[/bold orange1]────
-         /  |  \\
-        /   |   \\[/yellow]
-"""
+def get_gradient_color(pos: int, total: int, stage: int) -> str:
+    """Get color name based on position and stage."""
+    colors_by_stage = [
+        ["red", "orange1", "yellow"],
+        ["orange1", "yellow", "bright_yellow"],
+        ["yellow", "bright_yellow", "white"],
+        ["bright_yellow", "white", "bold white"],
+    ]
+    colors = colors_by_stage[min(stage, 3)]
+    ratio = pos / max(total, 1)
+    if ratio < 0.33:
+        return colors[0]
+    elif ratio < 0.66:
+        return colors[1]
+    return colors[2]
 
-SUN_RISE_FRAMES = [
-    # Frame 1 - just peeking
-    """
-[dim]━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/dim]
-[orange1]        ⠀⠀⣀⣀⣀⠀⠀[/orange1]
-[yellow]░░░░░░░░░░░░░░░░░░░░░░░░░░░░[/yellow]""",
-    # Frame 2 - rising
-    """
-[orange1]          \\  |  /[/orange1]
-[yellow]        ── ☀ ──[/yellow]
-[yellow]░░░░░░░░░░░░░░░░░░░░░░░░░░░░[/yellow]""",
-    # Frame 3 - full sun
-    """
-[yellow]        \\   |   /
-         \\  |  /
-      ────[bold orange1]☀[/bold orange1]────
-         /  |  \\
-        /   |   \\[/yellow]"""
-]
+
+def render_sunrise_frame(stage: int, width: int, height: int):
+    """Render a single frame of the sunrise animation - FULL SCREEN."""
+
+    # Sun art for each stage (bigger sun for bigger screens)
+    suns = [
+        ["      ⣀⣤⣤⣀      "],
+        ["     \\  │  /     ", "      \\ │ /      ", "    ───(●)───    ", "      / │ \\      ", "     /  │  \\     "],
+        ["       \\│/       ", "      \\ │ /      ", "     \\  │  /     ", "   ────(☀)────   ", "     /  │  \\     ", "      / │ \\      ", "       /│\\       "],
+        ["        │        ", "    \\   │   /    ", "     \\  │  /     ", "      \\ │ /      ", "   ─────☀─────   ", "      / │ \\      ", "     /  │  \\     ", "    /   │   \\    ", "        │        "],
+    ]
+    sun_art = suns[min(stage, 3)]
+
+    # Colors by stage
+    border_colors = ["red", "orange1", "yellow", "bright_yellow"]
+    sky_colors = ["grey7", "grey11", "grey19", "grey27"]
+    ground_colors = ["grey3", "grey7", "grey11", "grey15"]
+    sun_colors = ["red", "orange1", "yellow", "bright_yellow"]
+
+    border_color = border_colors[min(stage, 3)]
+    sky_bg = sky_colors[min(stage, 3)]
+    ground_bg = ground_colors[min(stage, 3)]
+    sun_color = sun_colors[min(stage, 3)]
+
+    # Position sun - rises from bottom
+    horizon_row = height - 6
+    sun_height = len(sun_art)
+    # Sun rises: stage 0 = peeking, stage 3 = high
+    sun_offset = [sun_height - 1, sun_height // 2, 2, 0][min(stage, 3)]
+    sun_start_row = horizon_row - sun_height + sun_offset
+
+    # Top border
+    console.print("█" * width, style=border_color, end="")
+
+    for row in range(1, height - 1):
+        if row >= horizon_row:
+            # Ground area
+            char = "░" if row == horizon_row else "▓"
+            console.print("█", style=border_color, end="")
+            console.print(char * (width - 2), style=f"{border_color} on {ground_bg}", end="")
+            console.print("█", style=border_color, end="")
+        elif sun_start_row <= row < sun_start_row + sun_height:
+            # Sun row
+            sun_idx = row - sun_start_row
+            if 0 <= sun_idx < len(sun_art):
+                sun_line = sun_art[sun_idx]
+                pad = (width - 2 - len(sun_line)) // 2
+                console.print("█", style=border_color, end="")
+                console.print(" " * pad, style=f"on {sky_bg}", end="")
+                console.print(sun_line, style=f"{sun_color} on {sky_bg}", end="")
+                console.print(" " * (width - 2 - pad - len(sun_line)), style=f"on {sky_bg}", end="")
+                console.print("█", style=border_color, end="")
+            else:
+                console.print("█", style=border_color, end="")
+                console.print(" " * (width - 2), style=f"on {sky_bg}", end="")
+                console.print("█", style=border_color, end="")
+        else:
+            # Empty sky
+            console.print("█", style=border_color, end="")
+            console.print(" " * (width - 2), style=f"on {sky_bg}", end="")
+            console.print("█", style=border_color, end="")
+
+    # Bottom border
+    console.print("█" * width, style=border_color, end="")
+
+
+def print_frame(lines):
+    """Print a frame with proper styling."""
+    for item in lines:
+        if len(item) == 2:
+            text, style = item
+            if style:
+                console.print(text, style=style, end="")
+            else:
+                console.print(text, end="")
+        else:
+            console.print(item, end="")
+
 
 def show_sunrise_complete():
-    """Display the epic sunrise completion message."""
-    console.clear()
+    """Display the epic animated sunrise - sun rises, reveals text, parks at top."""
+    import time
+    import shutil
 
-    sun_text = Text()
-    sun_text.append("        \\   |   /\n", style="yellow")
-    sun_text.append("         \\  |  /\n", style="yellow")
-    sun_text.append("      ────", style="yellow")
-    sun_text.append("☀", style="bold orange1")
-    sun_text.append("────\n", style="yellow")
-    sun_text.append("         /  |  \\\n", style="yellow")
-    sun_text.append("        /   |   \\\n", style="yellow")
+    # Sun art
+    sun_art = [
+        "        │        ",
+        "    \\   │   /    ",
+        "     \\  │  /     ",
+        "      \\ │ /      ",
+        "   ─────☀─────   ",
+        "      / │ \\      ",
+        "     /  │  \\     ",
+        "    /   │   \\    ",
+        "        │        ",
+    ]
+    sun_height = len(sun_art)
 
-    console.print()
-    console.print(Align.center(sun_text))
-    console.print()
-
-    # Main message
-    title = Text("Welcome to the Game of Today, Jack!", style="bold yellow")
-    subtitle = Text("And may the discipline be ever in your favour...", style="italic orange1")
-
-    console.print(Align.center(title))
-    console.print()
-    console.print(Align.center(subtitle))
-    console.print()
-
-    # Time
+    # Messages
+    msg1 = "Welcome to the Game of Today, Jack!"
+    msg2 = "And may the discipline be ever in your favour..."
     now = datetime.now()
-    time_text = Text(f"☀ {now.strftime('%A, %B %d')} • {now.strftime('%H:%M')}", style="dim")
-    console.print(Align.center(time_text))
-    console.print()
+    msg3 = f"☀ {now.strftime('%A, %B %d')} • {now.strftime('%H:%M')}"
+
+    # Get terminal size
+    term_size = shutil.get_terminal_size()
+    width = term_size.columns
+    height = term_size.lines
+
+    # Calculate positions
+    msg_row = height // 2  # Where text will appear
+    sun_final_row = 3       # Where sun parks at top
+
+    # Sun starts at bottom, rises to top
+    # Total frames: from bottom (height - sun_height) to top (sun_final_row)
+    start_pos = height - 6
+    end_pos = sun_final_row
+    total_frames = start_pos - end_pos
+
+    border_color = "bright_yellow"
+    sun_color = "bright_yellow"
+    sky_bg = "grey27"
+
+    # Track which messages have been revealed
+    revealed = [False, False, False]
+
+    for frame in range(total_frames + 10):  # Extra frames to hold at end
+        term_size = shutil.get_terminal_size()
+        width = term_size.columns
+        height = term_size.lines
+
+        sun_row = max(end_pos, start_pos - frame)
+
+        # Check if sun passed message rows - reveal text
+        if sun_row < msg_row - 2:
+            revealed[0] = True
+        if sun_row < msg_row:
+            revealed[1] = True
+        if sun_row < msg_row + 2:
+            revealed[2] = True
+
+        console.clear()
+
+        # Top border
+        console.print("█" * width, style=border_color, end="")
+
+        for row in range(1, height - 1):
+            is_sun_row = sun_row <= row < sun_row + sun_height
+            sun_idx = row - sun_row
+
+            console.print("█", style=border_color, end="")
+
+            if is_sun_row and 0 <= sun_idx < sun_height:
+                # Sun row
+                sun_line = sun_art[sun_idx]
+                pad = (width - 2 - len(sun_line)) // 2
+                console.print(" " * pad, style=f"on {sky_bg}", end="")
+                console.print(sun_line, style=f"{sun_color} on {sky_bg}", end="")
+                console.print(" " * (width - 2 - pad - len(sun_line)), style=f"on {sky_bg}", end="")
+            elif row == msg_row - 2 and revealed[0]:
+                # Message 1
+                pad = (width - 2 - len(msg1)) // 2
+                console.print(" " * pad, style=f"on {sky_bg}", end="")
+                console.print(msg1, style=f"bold bright_yellow on {sky_bg}", end="")
+                console.print(" " * (width - 2 - pad - len(msg1)), style=f"on {sky_bg}", end="")
+            elif row == msg_row and revealed[1]:
+                # Message 2
+                pad = (width - 2 - len(msg2)) // 2
+                console.print(" " * pad, style=f"on {sky_bg}", end="")
+                console.print(msg2, style=f"italic orange1 on {sky_bg}", end="")
+                console.print(" " * (width - 2 - pad - len(msg2)), style=f"on {sky_bg}", end="")
+            elif row == msg_row + 2 and revealed[2]:
+                # Message 3
+                pad = (width - 2 - len(msg3)) // 2
+                console.print(" " * pad, style=f"on {sky_bg}", end="")
+                console.print(msg3, style=f"dim on {sky_bg}", end="")
+                console.print(" " * (width - 2 - pad - len(msg3)), style=f"on {sky_bg}", end="")
+            else:
+                # Empty sky
+                console.print(" " * (width - 2), style=f"on {sky_bg}", end="")
+
+            console.print("█", style=border_color, end="")
+
+        # Bottom border
+        console.print("█" * width, style=border_color, end="")
+
+        time.sleep(0.08)  # Animation speed
+
+    # TODO: Work on logo more tomorrow - make it glow/pulse, add rays, etc.
 
 
 def show_progress(phase: int, total_phases: int, brightness: int, temp: int):
@@ -423,6 +568,27 @@ async def cmd_ablation(args):
     print("Tip: Rate your wake quality each day (1-10) to compare!")
 
 
+async def cmd_test_ui(args):
+    """Test the terminal UI in isolation."""
+    import time
+
+    if args.complete_only:
+        show_sunrise_complete()
+        return
+
+    console.print("[dim]Testing progress bar...[/dim]\n")
+
+    # Simulate sunrise progress
+    for i in range(0, 101, 2):
+        show_progress(1, 3, i, 2500 + int(i * 15))
+        time.sleep(0.05)
+
+    print()  # Clear progress line
+    time.sleep(0.5)
+
+    show_sunrise_complete()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Sunrise Alarm - Science-backed wake-up light using Kasa smart bulbs",
@@ -485,6 +651,12 @@ Profiles: standard (30min), quick (20min), gentle (45min), ablation_day1/2/3
     ablation_parser.add_argument("time", nargs="?", default=DEFAULT_WAKE_TIME,
                                   help=f"Wake time for tests (default: {DEFAULT_WAKE_TIME})")
     ablation_parser.set_defaults(func=cmd_ablation)
+
+    # 'test-ui' - test terminal UI
+    test_ui_parser = subparsers.add_parser("test-ui", help="Test terminal UI in isolation")
+    test_ui_parser.add_argument("-c", "--complete-only", action="store_true",
+                                 help="Only show completion screen")
+    test_ui_parser.set_defaults(func=cmd_test_ui)
 
     args = parser.parse_args()
 
