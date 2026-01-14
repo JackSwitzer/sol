@@ -269,6 +269,10 @@ async def handle_call_tool(
 
             bulb = await get_bulb(ip)
 
+            # Turn off first to ensure clean start from darkness
+            await bulb.turn_off()
+            await asyncio.sleep(0.5)  # Brief pause to ensure state change
+
             # Start dim and warm
             await bulb.turn_on()
             await bulb.set_brightness(1)

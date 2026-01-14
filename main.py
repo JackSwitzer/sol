@@ -326,7 +326,7 @@ async def discover_bulbs():
     return devices
 
 
-async def run_sunrise(ip: str, profile: str = "standard", verbose: bool = True):
+async def run_sunrise(ip: str, profile: str = "standard", verbose: bool = True, auto_off_hours: float = 3.0):
     """Run the science-backed sunrise simulation."""
     if profile not in SUNRISE_PROFILES:
         print(f"Unknown profile '{profile}'. Available: {', '.join(SUNRISE_PROFILES.keys())}")
@@ -346,9 +346,17 @@ async def run_sunrise(ip: str, profile: str = "standard", verbose: bool = True):
     await bulb.update()
     light = bulb.modules[Module.Light]
 
-    # Start from off
-    await bulb.turn_off()
-    await asyncio.sleep(0.5)
+    # Ensure lamp is off before we begin
+    if bulb.is_on:
+        if verbose:
+            print("  Turning off lamp before sunrise...")
+        await bulb.turn_off()
+        await asyncio.sleep(1)
+        await bulb.update()
+        if bulb.is_on:
+            print("  Warning: Lamp still on, forcing off...")
+            await bulb.turn_off()
+            await asyncio.sleep(0.5)
 
     total_seconds = duration_minutes * 60
     elapsed = 0
@@ -395,6 +403,23 @@ async def run_sunrise(ip: str, profile: str = "standard", verbose: bool = True):
     if verbose:
         print()  # Clear the progress line
         show_sunrise_complete()
+
+    # Schedule auto-off after sunrise
+    if auto_off_hours > 0:
+        off_time = datetime.now() + timedelta(hours=auto_off_hours)
+        print(f"\n  Lamp will auto-off at {off_time.strftime('%H:%M')} ({auto_off_hours:.1f}h from now)")
+        print("  Press Ctrl+C to cancel auto-off and keep lamp on\n")
+
+        try:
+            await asyncio.sleep(auto_off_hours * 3600)
+            # Reconnect since it's been a while
+            bulb = await Device.connect(host=ip)
+            await bulb.turn_off()
+            print(f"\n  Auto-off complete. Lamp turned off at {datetime.now().strftime('%H:%M')}")
+        except asyncio.CancelledError:
+            print("\n  Auto-off cancelled. Lamp will stay on.")
+        except KeyboardInterrupt:
+            print("\n  Auto-off cancelled. Lamp will stay on.")
 
 
 async def run_demo(ip: str):
@@ -534,7 +559,7 @@ def show_waiting_screen(start_dt: datetime, end_dt: datetime, profile_name: str)
     console.print("█" * width, style=border_color, end="")
 
 
-async def schedule_sunrise(wake_time: str, ip: str, profile: str):
+async def schedule_sunrise(wake_time: str, ip: str, profile: str, auto_off_hours: float = 3.0):
     """Schedule sunrise with live countdown display."""
     try:
         wake_hour, wake_minute = map(int, wake_time.split(":"))
@@ -562,19 +587,74 @@ async def schedule_sunrise(wake_time: str, ip: str, profile: str):
         await asyncio.sleep(1)
 
     # Run the actual sunrise (bulb + terminal animation synced)
-    await run_sunrise(ip, profile)
+    await run_sunrise(ip, profile, auto_off_hours=auto_off_hours)
 
 
 async def cmd_now(args):
     """Handle 'now' command - immediate sunrise."""
     ip = args.ip or DEFAULT_BULB_IP
-    await run_sunrise(ip, args.profile)
+    auto_off = 0 if args.no_auto_off else args.auto_off
+    await run_sunrise(ip, args.profile, auto_off_hours=auto_off)
 
 
 async def cmd_at(args):
     """Handle 'at' command - scheduled sunrise."""
     ip = args.ip or DEFAULT_BULB_IP
-    await schedule_sunrise(args.time, ip, args.profile)
+    auto_off = 0 if args.no_auto_off else args.auto_off
+    await schedule_sunrise(args.time, ip, args.profile, auto_off_hours=auto_off)
+
+
+async def cmd_up(args):
+    """Handle 'up' command - wake up at specified time (sunrise ends then)."""
+    ip = args.ip or DEFAULT_BULB_IP
+    config = SUNRISE_PROFILES.get(args.profile, SUNRISE_PROFILES["standard"])
+    duration_minutes = config["duration_minutes"]
+    auto_off = 0 if args.no_auto_off else args.auto_off
+
+    # Parse the wake time
+    try:
+        wake_hour, wake_minute = map(int, args.time.split(":"))
+    except ValueError:
+        print(f"Error: Invalid time format '{args.time}'. Use HH:MM (e.g., 07:00)")
+        return
+
+    # Calculate start time (subtract duration from wake time)
+    now = datetime.now()
+    wake_dt = now.replace(hour=wake_hour, minute=wake_minute, second=0, microsecond=0)
+    if wake_dt <= now:
+        wake_dt += timedelta(days=1)
+
+    start_dt = wake_dt - timedelta(minutes=duration_minutes)
+    start_time = start_dt.strftime("%H:%M")
+
+    print(f"Wake up at {args.time} → Sunrise starts at {start_time} ({duration_minutes} min)")
+    await schedule_sunrise(start_time, ip, args.profile, auto_off_hours=auto_off)
+
+
+async def cmd_rise(args):
+    """Handle 'rise' command - sunrise starts at specified time."""
+    ip = args.ip or DEFAULT_BULB_IP
+    config = SUNRISE_PROFILES.get(args.profile, SUNRISE_PROFILES["standard"])
+    duration_minutes = config["duration_minutes"]
+    auto_off = 0 if args.no_auto_off else args.auto_off
+
+    # Parse the start time
+    try:
+        start_hour, start_minute = map(int, args.time.split(":"))
+    except ValueError:
+        print(f"Error: Invalid time format '{args.time}'. Use HH:MM (e.g., 06:30)")
+        return
+
+    now = datetime.now()
+    start_dt = now.replace(hour=start_hour, minute=start_minute, second=0, microsecond=0)
+    if start_dt <= now:
+        start_dt += timedelta(days=1)
+
+    end_dt = start_dt + timedelta(minutes=duration_minutes)
+    end_time = end_dt.strftime("%H:%M")
+
+    print(f"Sunrise at {args.time} → Wake up at {end_time} ({duration_minutes} min)")
+    await schedule_sunrise(args.time, ip, args.profile, auto_off_hours=auto_off)
 
 
 async def cmd_demo(args):
@@ -677,42 +757,61 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s now                      # Start standard 30-min sunrise now
+  %(prog)s up 07:00                 # Wake up at 7:00 AM (sunrise ends then)
+  %(prog)s up 07:00 -p gentle       # Gentle 45-min sunrise, wake at 7:00
+  %(prog)s rise 06:30               # Sunrise starts at 6:30 AM
+  %(prog)s now                      # Start sunrise immediately
   %(prog)s now -p quick             # Start quick 20-min sunrise
-  %(prog)s at 06:30                 # Schedule wake at 6:30 AM
-  %(prog)s at 07:00 -p gentle       # Gentle 45-min sunrise, wake at 7:00
   %(prog)s demo                     # Fun 35-second light show
   %(prog)s profiles                 # List all available profiles
-  %(prog)s ablation 06:30           # Show 3-day test schedule for 6:30 wake
 
-Profiles: standard (30min), quick (20min), gentle (45min), ablation_day1/2/3
+Profiles: standard (30min), quick (20min), gentle (45min)
 """
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Commands")
 
     # Common arguments
-    def add_common_args(p, include_profile=True):
+    def add_common_args(p, include_profile=True, include_auto_off=True):
         p.add_argument("--ip", help=f"Bulb IP address (default: {DEFAULT_BULB_IP})")
         if include_profile:
             p.add_argument("-p", "--profile", default="standard",
                            help="Sunrise profile (default: standard)")
+        if include_auto_off:
+            p.add_argument("--auto-off", type=float, default=3.0,
+                           help="Hours after sunrise to auto-turn off lamp (default: 3.0)")
+            p.add_argument("--no-auto-off", action="store_true",
+                           help="Disable auto-off (lamp stays on indefinitely)")
 
     # 'now' - immediate sunrise
     now_parser = subparsers.add_parser("now", help="Start sunrise immediately")
     add_common_args(now_parser)
     now_parser.set_defaults(func=cmd_now)
 
-    # 'at' - scheduled sunrise
-    at_parser = subparsers.add_parser("at", help="Schedule sunrise for a specific time")
+    # 'at' - scheduled sunrise (legacy, same as 'rise')
+    at_parser = subparsers.add_parser("at", help="Schedule sunrise start time (alias for 'rise')")
     at_parser.add_argument("time", nargs="?", default=DEFAULT_WAKE_TIME,
-                           help=f"Wake time in HH:MM format (default: {DEFAULT_WAKE_TIME})")
+                           help=f"Sunrise start time in HH:MM format (default: {DEFAULT_WAKE_TIME})")
     add_common_args(at_parser)
     at_parser.set_defaults(func=cmd_at)
 
+    # 'up' - wake up at specified time (sunrise ends then)
+    up_parser = subparsers.add_parser("up", help="Wake up at specified time (sunrise ends then)")
+    up_parser.add_argument("time", nargs="?", default=DEFAULT_WAKE_TIME,
+                           help=f"Wake up time in HH:MM format (default: {DEFAULT_WAKE_TIME})")
+    add_common_args(up_parser)
+    up_parser.set_defaults(func=cmd_up)
+
+    # 'rise' - sunrise starts at specified time
+    rise_parser = subparsers.add_parser("rise", help="Sunrise starts at specified time")
+    rise_parser.add_argument("time", nargs="?", default=DEFAULT_WAKE_TIME,
+                             help=f"Sunrise start time in HH:MM format (default: {DEFAULT_WAKE_TIME})")
+    add_common_args(rise_parser)
+    rise_parser.set_defaults(func=cmd_rise)
+
     # 'demo' - fun demo mode
     demo_parser = subparsers.add_parser("demo", help="Fun 35-second light show demo")
-    add_common_args(demo_parser, include_profile=False)
+    add_common_args(demo_parser, include_profile=False, include_auto_off=False)
     demo_parser.set_defaults(func=cmd_demo)
 
     # 'discover' - find devices
