@@ -723,6 +723,24 @@ async def cmd_ablation(args):
 async def cmd_test_ui(args):
     """Test the terminal UI in isolation."""
     import time
+    import webbrowser
+
+    # Web mode - open portfolio website with test params
+    if args.web:
+        base_url = "http://localhost:3000/projects/sol-sunrise-lamp"
+        params = []
+        if args.time:
+            params.append(f"time={args.time}")
+        if args.date:
+            params.append(f"date={args.date}")
+        if args.scrub:
+            params.append("scrub=true")
+            params.append(f"speed={int(args.speed)}")
+
+        url = base_url + ("?" + "&".join(params) if params else "")
+        console.print(f"[cyan]Opening:[/cyan] {url}")
+        webbrowser.open(url)
+        return
 
     if args.complete_only:
         show_sunrise_complete()
@@ -738,6 +756,16 @@ async def cmd_test_ui(args):
         show_sunrise_complete()
         return
 
+    # Time/date simulation mode
+    if args.time or args.date or args.scrub:
+        show_sky_simulation(args)
+        return
+
+    # Export mode
+    if args.export:
+        export_sky_frames(args.export)
+        return
+
     console.print("[dim]Testing progress bar...[/dim]\n")
 
     # Simulate sunrise progress
@@ -749,6 +777,151 @@ async def cmd_test_ui(args):
     time.sleep(0.5)
 
     show_sunrise_complete()
+
+
+def show_sky_simulation(args):
+    """Show sky simulation with time/date controls."""
+    import time
+    import shutil
+    from datetime import datetime
+
+    # Toronto coordinates
+    TORONTO_LAT = 43.6532
+    TORONTO_LON = -79.3832
+
+    # Parse base date/time
+    base_date = datetime.now()
+    if args.date:
+        try:
+            year, month, day = map(int, args.date.split("-"))
+            base_date = base_date.replace(year=year, month=month, day=day)
+        except ValueError:
+            console.print("[red]Invalid date format. Use YYYY-MM-DD[/red]")
+            return
+
+    if args.time:
+        try:
+            parts = args.time.split(":")
+            hour, minute = int(parts[0]), int(parts[1])
+            second = int(parts[2]) if len(parts) > 2 else 0
+            base_date = base_date.replace(hour=hour, minute=minute, second=second)
+        except (ValueError, IndexError):
+            console.print("[red]Invalid time format. Use HH:MM or HH:MM:SS[/red]")
+            return
+
+    console.print(f"[cyan]Sky Simulation[/cyan]")
+    console.print(f"Base time: {base_date.strftime('%Y-%m-%d %H:%M:%S')}")
+    if args.scrub:
+        console.print(f"Scrub mode: {args.speed} minutes/second")
+    console.print("[dim]Press Ctrl+C to exit[/dim]\n")
+
+    offset_minutes = 0
+
+    try:
+        while True:
+            # Calculate simulated time
+            sim_time = base_date + timedelta(minutes=offset_minutes)
+
+            # Get terminal size
+            term_size = shutil.get_terminal_size()
+            width = term_size.columns
+            height = min(term_size.lines - 4, 20)  # Leave room for info
+
+            # Calculate sun position (simplified)
+            hour = sim_time.hour + sim_time.minute / 60
+            # Simplified altitude: peaks at noon, negative at night
+            altitude = 70 * math.sin((hour - 6) * math.pi / 12) if 6 <= hour <= 18 else -20
+
+            # Determine colors based on altitude
+            if altitude > 15:
+                sky_bg = "grey27"
+                border_color = "bright_yellow"
+                sun_char = "☀"
+            elif altitude > 0:
+                sky_bg = "grey19"
+                border_color = "yellow"
+                sun_char = "☀"
+            elif altitude > -6:
+                sky_bg = "grey11"
+                border_color = "orange1"
+                sun_char = "☀"
+            else:
+                sky_bg = "grey7"
+                border_color = "blue"
+                sun_char = "☽"
+
+            # Clear and render
+            console.clear()
+
+            # Info bar
+            time_str = sim_time.strftime("%A, %B %d • %H:%M")
+            console.print(f"[dim]{sun_char} {time_str}[/dim]")
+            console.print(f"[dim]Sun altitude: {altitude:.1f}°[/dim]\n")
+
+            # Simple sky visualization
+            console.print("█" * width, style=border_color)
+            for row in range(height):
+                console.print("█", style=border_color, end="")
+                console.print(" " * (width - 2), style=f"on {sky_bg}", end="")
+                console.print("█", style=border_color)
+            console.print("█" * width, style=border_color)
+
+            # Update for scrub mode
+            if args.scrub:
+                offset_minutes += args.speed / 10  # Update 10x per second
+                if offset_minutes >= 1440:  # 24 hours
+                    offset_minutes = 0
+                time.sleep(0.1)
+            else:
+                time.sleep(1)
+    except KeyboardInterrupt:
+        console.print("\n[dim]Simulation ended.[/dim]")
+
+
+def export_sky_frames(output_dir: str):
+    """Export sky frames for GIF creation."""
+    import os
+    import shutil
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    console.print(f"[cyan]Exporting frames to:[/cyan] {output_dir}")
+    console.print("[dim]This will export 24 frames (one per hour)[/dim]\n")
+
+    term_size = shutil.get_terminal_size()
+    width = min(term_size.columns, 80)
+    height = 15
+
+    for hour in range(24):
+        # Calculate sun altitude
+        altitude = 70 * math.sin((hour - 6) * math.pi / 12) if 6 <= hour <= 18 else -20
+
+        # Determine colors
+        if altitude > 15:
+            sky_color = "#4a90d9"
+            border_color = "#ffff00"
+        elif altitude > 0:
+            sky_color = "#ff8c42"
+            border_color = "#ffd700"
+        elif altitude > -6:
+            sky_color = "#2a2a5a"
+            border_color = "#ff6b35"
+        else:
+            sky_color = "#0a0a1a"
+            border_color = "#4a4a6a"
+
+        # Write frame info
+        frame_file = os.path.join(output_dir, f"frame_{hour:02d}.txt")
+        with open(frame_file, "w") as f:
+            f.write(f"Hour: {hour:02d}:00\n")
+            f.write(f"Altitude: {altitude:.1f}\n")
+            f.write(f"Sky: {sky_color}\n")
+            f.write(f"Border: {border_color}\n")
+
+        console.print(f"  [green]✓[/green] Frame {hour:02d}:00 (altitude: {altitude:.1f}°)")
+
+    console.print(f"\n[green]Exported 24 frames to {output_dir}[/green]")
+    console.print("[dim]Use VHS or similar tool to render final GIF[/dim]")
 
 
 def main():
@@ -839,6 +1012,18 @@ Profiles: standard (30min), quick (20min), gentle (45min)
                                  help="Only show completion screen")
     test_ui_parser.add_argument("-w", "--waiting", action="store_true",
                                  help="Test waiting/countdown screen")
+    test_ui_parser.add_argument("-t", "--time", type=str,
+                                 help="Simulate specific time (HH:MM or HH:MM:SS)")
+    test_ui_parser.add_argument("-d", "--date", type=str,
+                                 help="Simulate specific date (YYYY-MM-DD)")
+    test_ui_parser.add_argument("-s", "--scrub", action="store_true",
+                                 help="Enable 24-hour scrub mode (cycle through day)")
+    test_ui_parser.add_argument("--speed", type=float, default=60.0,
+                                 help="Scrub speed: minutes per second (default: 60)")
+    test_ui_parser.add_argument("--export", type=str,
+                                 help="Export frames to directory for GIF creation")
+    test_ui_parser.add_argument("--web", action="store_true",
+                                 help="Open portfolio website test page in browser")
     test_ui_parser.set_defaults(func=cmd_test_ui)
 
     args = parser.parse_args()
