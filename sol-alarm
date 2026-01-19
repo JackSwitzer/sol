@@ -104,34 +104,51 @@ echo "  Wake time: $WAKE_TIME"
 echo "  Profile: $PROFILE"
 echo ""
 
-# Launch with caffeinate to prevent Mac sleep
-# -i = prevent idle sleep
-# -s = prevent system sleep
-nohup caffeinate -is bash -c "
-    cd '$LAMP_DIR'
-    uv run python main.py up '$WAKE_TIME' -p '$PROFILE' --no-auto-off
-" > "$LOG_FILE" 2>&1 &
+# Create a launcher script that the new terminal will run
+LAUNCHER="/tmp/sol-launcher.sh"
+cat > "$LAUNCHER" << 'LAUNCHER_EOF'
+#!/bin/bash
+LAMP_DIR=~/Desktop/Lamp
+PID_FILE="/tmp/sol-sunrise.pid"
+cd "$LAMP_DIR"
+echo $$ > "$PID_FILE"
+exec caffeinate -is uv run python main.py up '$WAKE_TIME' -p '$PROFILE' --no-auto-off
+LAUNCHER_EOF
 
-ALARM_PID=$!
-echo "$ALARM_PID" > "$PID_FILE"
+# Substitute variables into the launcher
+sed -i '' "s|\$WAKE_TIME|$WAKE_TIME|g" "$LAUNCHER"
+sed -i '' "s|\$PROFILE|$PROFILE|g" "$LAUNCHER"
+chmod +x "$LAUNCHER"
 
-sleep 2
+# Open new Terminal window and run the alarm with full screen
+osascript -e '
+tell application "Terminal"
+    activate
+    do script "'"$LAUNCHER"'"
+    delay 1
+    -- Enter full screen (Cmd+Ctrl+F)
+    tell application "System Events" to tell process "Terminal"
+        keystroke "f" using {command down, control down}
+    end tell
+end tell
+'
+
+sleep 3
 
 # Verify it started
-if ! kill -0 "$ALARM_PID" 2>/dev/null; then
-    echo "ERROR: Alarm failed to start. Check log:"
-    cat "$LOG_FILE"
-    exit 1
+if [ -f "$PID_FILE" ]; then
+    ALARM_PID=$(cat "$PID_FILE")
+    if kill -0 "$ALARM_PID" 2>/dev/null; then
+        echo "=== Alarm Active ==="
+        echo "Running in new Terminal window (full screen)"
+        echo ""
+        echo "PID: $ALARM_PID"
+        echo ""
+        echo "To cancel:"
+        echo "  kill $ALARM_PID"
+        exit 0
+    fi
 fi
 
-# Show status
-echo "=== Alarm Active ==="
-head -1 "$LOG_FILE" 2>/dev/null || echo "(waiting for output...)"
-echo ""
-echo "PID: $ALARM_PID"
-echo "Log: $LOG_FILE"
-echo ""
-echo "Commands:"
-echo "  tail -f $LOG_FILE    # Watch progress"
-echo "  kill $ALARM_PID      # Cancel alarm"
-echo "  sol off              # Turn off lamp"
+echo "Alarm launched. Check Terminal app for the TUI display."
+echo "(You may need to grant Terminal accessibility permissions for full screen)"

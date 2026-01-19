@@ -11,6 +11,11 @@ import argparse
 import asyncio
 import json
 import math
+import sys
+import tty
+import termios
+import shutil
+import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
 from kasa import Discover, Device, Module
@@ -22,6 +27,298 @@ from rich.align import Align
 from rich import print as rprint
 
 console = Console()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# INTERACTIVE TUI - Sunrise Configuration Interface
+# ═══════════════════════════════════════════════════════════════════════════════
+
+SUN_ASCII = [
+    "            ·  ✦  ·            ",
+    "        ✦       │       ✦      ",
+    "     ·    \\     │     /    ·   ",
+    "            \\   │   /          ",
+    "   ─ ─ ─ ─ ─ ( ☀ ) ─ ─ ─ ─ ─  ",
+    "            /   │   \\          ",
+    "     ·    /     │     \\    ·   ",
+    "        ✦       │       ✦      ",
+    "            ·  ✦  ·            ",
+]
+
+MOON_ASCII = [
+    "                               ",
+    "           ·411*1·             ",
+    "        ✦      ░░░░  ✦        ",
+    "            ░░░░░░░            ",
+    "           ░░░░░░░░░           ",
+    "            ░░░░░░░            ",
+    "        ✦      ░░░░  ✦        ",
+    "           ·  ✦  ·             ",
+    "                               ",
+]
+
+
+def get_key():
+    """Read a single keypress."""
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setraw(sys.stdin.fileno())
+        ch = sys.stdin.read(1)
+        if ch == '\x1b':  # Escape sequence
+            ch2 = sys.stdin.read(1)
+            if ch2 == '[':
+                ch3 = sys.stdin.read(1)
+                if ch3 == 'A': return 'UP'
+                if ch3 == 'B': return 'DOWN'
+                if ch3 == 'C': return 'RIGHT'
+                if ch3 == 'D': return 'LEFT'
+        if ch == '\r' or ch == '\n': return 'ENTER'
+        if ch == 'q' or ch == '\x03': return 'QUIT'  # q or Ctrl+C
+        if ch == '\t': return 'TAB'
+        return ch
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+
+def render_setup_screen(wake_hour: int, wake_min: int, duration: int, max_temp: int,
+                        selected_field: int, lamp_status: str):
+    """Render the interactive setup screen."""
+    term = shutil.get_terminal_size()
+    width = term.columns
+    height = term.lines - 1
+
+    # Colors - sunrise gradient palette
+    night_bg = "grey7"
+    accent = "orange1"
+    highlight = "bright_yellow"
+    dim = "grey50"
+
+    console.clear()
+
+    # Calculate vertical centering
+    content_height = 24
+    top_pad = max(0, (height - content_height) // 2)
+
+    # Top padding
+    for _ in range(top_pad):
+        console.print()
+
+    # Header with sun
+    console.print()
+    for i, line in enumerate(SUN_ASCII):
+        color = ["grey30", "grey50", "orange1", "orange1", "bright_yellow",
+                 "orange1", "orange1", "grey50", "grey30"][i]
+        centered = line.center(width)
+        console.print(centered, style=color)
+
+    console.print()
+    title = "S O L"
+    subtitle = "sunrise alarm"
+    console.print(title.center(width), style="bold bright_yellow")
+    console.print(subtitle.center(width), style="dim orange1")
+    console.print()
+
+    # Lamp status
+    status_color = "green" if "Connected" in lamp_status else "red"
+    console.print(f"◉ {lamp_status}".center(width), style=status_color)
+    console.print()
+
+    # Settings panel
+    box_width = 44
+    pad = (width - box_width) // 2
+    left_pad = " " * pad
+
+    # Box top
+    console.print(f"{left_pad}╭{'─' * (box_width - 2)}╮", style=dim)
+
+    # Wake time field
+    field_0_style = f"bold {highlight}" if selected_field == 0 else dim
+    wake_str = f"{wake_hour:02d}:{wake_min:02d}"
+    arrow_l = "◀ " if selected_field == 0 else "  "
+    arrow_r = " ▶" if selected_field == 0 else "  "
+    line = f"│  WAKE TIME        {arrow_l}[{field_0_style}]{wake_str}[/{field_0_style}]{arrow_r}       │"
+    console.print(f"{left_pad}{line}", style=dim)
+
+    # Spacer
+    console.print(f"{left_pad}│{' ' * (box_width - 2)}│", style=dim)
+
+    # Duration field
+    field_1_style = f"bold {highlight}" if selected_field == 1 else dim
+    duration_str = f"{duration} min"
+    arrow_l = "◀ " if selected_field == 1 else "  "
+    arrow_r = " ▶" if selected_field == 1 else "  "
+    line = f"│  DURATION         {arrow_l}[{field_1_style}]{duration_str:>5}[/{field_1_style}]{arrow_r}       │"
+    console.print(f"{left_pad}{line}", style=dim)
+
+    # Spacer
+    console.print(f"{left_pad}│{' ' * (box_width - 2)}│", style=dim)
+
+    # Max temp field
+    field_2_style = f"bold {highlight}" if selected_field == 2 else dim
+    temp_str = f"{max_temp}K"
+    arrow_l = "◀ " if selected_field == 2 else "  "
+    arrow_r = " ▶" if selected_field == 2 else "  "
+    line = f"│  END TEMP         {arrow_l}[{field_2_style}]{temp_str:>5}[/{field_2_style}]{arrow_r}       │"
+    console.print(f"{left_pad}{line}", style=dim)
+
+    # Box bottom
+    console.print(f"{left_pad}╰{'─' * (box_width - 2)}╯", style=dim)
+
+    console.print()
+
+    # Calculate and show sunrise start time
+    duration_td = timedelta(minutes=duration)
+    wake_time = datetime.now().replace(hour=wake_hour, minute=wake_min, second=0)
+    if wake_time <= datetime.now():
+        wake_time += timedelta(days=1)
+    start_time = wake_time - duration_td
+
+    info = f"Sunrise: {start_time.strftime('%H:%M')} → Wake: {wake_time.strftime('%H:%M')}"
+    console.print(info.center(width), style="orange1")
+
+    console.print()
+    console.print()
+
+    # Action buttons
+    btn_start = " [ ENTER ] Start Alarm "
+    btn_quit = " [ Q ] Quit "
+    buttons = f"{btn_start}     {btn_quit}"
+    console.print(buttons.center(width), style=dim)
+
+    # Instructions
+    console.print()
+    console.print("↑↓ select  ←→ adjust".center(width), style="grey35")
+
+
+async def test_lamp_connection(ip: str) -> str:
+    """Test lamp connection and return status string."""
+    try:
+        bulb = await Device.connect(host=ip)
+        await bulb.update()
+        return f"Connected: {bulb.alias}"
+    except Exception as e:
+        return f"Not connected: {str(e)[:30]}"
+
+
+async def turn_off_lamp(ip: str):
+    """Turn off the lamp."""
+    try:
+        bulb = await Device.connect(host=ip)
+        await bulb.turn_off()
+    except:
+        pass
+
+
+def launch_alarm_in_terminal(wake_time: str, duration: int, max_temp: int, ip: str):
+    """Launch the alarm in a new fullscreen terminal window."""
+    # Determine profile based on duration
+    if duration <= 20:
+        profile = "quick"
+    elif duration <= 30:
+        profile = "standard"
+    else:
+        profile = "gentle"
+
+    # Create launcher script
+    launcher = "/tmp/sol-launcher.sh"
+    script_dir = Path(__file__).parent
+
+    with open(launcher, 'w') as f:
+        f.write(f'''#!/bin/bash
+cd "{script_dir}"
+echo $$ > /tmp/sol-sunrise.pid
+exec caffeinate -is uv run python main.py up {wake_time} -p {profile} --no-auto-off
+''')
+
+    subprocess.run(['chmod', '+x', launcher])
+
+    # Launch in new Terminal window with fullscreen
+    applescript = f'''
+    tell application "Terminal"
+        activate
+        do script "{launcher}"
+        delay 0.8
+        tell application "System Events" to tell process "Terminal"
+            keystroke "f" using {{command down, control down}}
+        end tell
+    end tell
+    '''
+    subprocess.run(['osascript', '-e', applescript])
+
+
+async def interactive_setup():
+    """Run the interactive setup TUI."""
+    # Default values
+    wake_hour = 7
+    wake_min = 0
+    duration = 30  # minutes
+    max_temp = 5000  # Kelvin
+    selected_field = 0  # 0=time, 1=duration, 2=temp
+
+    durations = [20, 30, 45]
+    temps = [4000, 4500, 5000, 5500, 6000, 6500]
+
+    ip = DEFAULT_BULB_IP
+
+    # Test lamp connection
+    lamp_status = await test_lamp_connection(ip)
+
+    while True:
+        render_setup_screen(wake_hour, wake_min, duration, max_temp, selected_field, lamp_status)
+
+        key = get_key()
+
+        if key == 'QUIT':
+            console.clear()
+            console.print("\n  Cancelled.\n", style="dim")
+            return
+
+        elif key == 'ENTER':
+            # Turn off lamp and launch alarm
+            console.clear()
+            console.print("\n  Preparing alarm...\n", style="orange1")
+
+            await turn_off_lamp(ip)
+
+            wake_time = f"{wake_hour:02d}:{wake_min:02d}"
+            launch_alarm_in_terminal(wake_time, duration, max_temp, ip)
+
+            console.print(f"  ☀ Alarm set for {wake_time}", style="bright_yellow")
+            console.print(f"  Running in new terminal window.\n", style="dim")
+            return
+
+        elif key == 'UP' or key == 'TAB':
+            selected_field = (selected_field - 1) % 3
+
+        elif key == 'DOWN':
+            selected_field = (selected_field + 1) % 3
+
+        elif key == 'LEFT':
+            if selected_field == 0:  # Time
+                wake_min -= 5
+                if wake_min < 0:
+                    wake_min = 55
+                    wake_hour = (wake_hour - 1) % 24
+            elif selected_field == 1:  # Duration
+                idx = durations.index(duration) if duration in durations else 1
+                duration = durations[(idx - 1) % len(durations)]
+            elif selected_field == 2:  # Temp
+                idx = temps.index(max_temp) if max_temp in temps else 2
+                max_temp = temps[(idx - 1) % len(temps)]
+
+        elif key == 'RIGHT':
+            if selected_field == 0:  # Time
+                wake_min += 5
+                if wake_min >= 60:
+                    wake_min = 0
+                    wake_hour = (wake_hour + 1) % 24
+            elif selected_field == 1:  # Duration
+                idx = durations.index(duration) if duration in durations else 1
+                duration = durations[(idx + 1) % len(durations)]
+            elif selected_field == 2:  # Temp
+                idx = temps.index(max_temp) if max_temp in temps else 2
+                max_temp = temps[(idx + 1) % len(temps)]
 
 def get_gradient_color(pos: int, total: int, stage: int) -> str:
     """Get color name based on position and stage."""
@@ -982,7 +1279,8 @@ Profiles: standard (30min), quick (20min), gentle (45min)
     args = parser.parse_args()
 
     if not args.command:
-        parser.print_help()
+        # No command given - launch interactive setup TUI
+        asyncio.run(interactive_setup())
         return
 
     asyncio.run(args.func(args))
