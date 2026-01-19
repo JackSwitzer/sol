@@ -1029,7 +1029,9 @@ Profiles: standard (30min), quick (20min), gentle (45min)
     args = parser.parse_args()
 
     if not args.command:
-        parser.print_help()
+        # Run the Textual TUI when no command provided
+        from sol_tui import run_tui
+        run_tui(bulb_ip=DEFAULT_BULB_IP)
         return
 
     asyncio.run(args.func(args))

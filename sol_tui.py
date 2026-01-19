@@ -1,0 +1,637 @@
+#!/usr/bin/env python3
+"""Sol Sunrise Alarm - Textual TUI.
+
+A beautiful, flicker-free terminal interface for configuring sunrise alarms.
+"""
+
+import asyncio
+import sys
+from datetime import datetime, timedelta
+from pathlib import Path
+
+from kasa import Device, Module
+from rich.text import Text
+from textual import on, work
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.containers import Center, Container, Vertical
+from textual.reactive import reactive
+from textual.screen import Screen
+from textual.widgets import Footer, Static
+
+# Default configuration
+DEFAULT_BULB_IP = "192.168.1.77"
+
+# Profiles (presets)
+PROFILES = {
+    "standard": {"duration": 30, "end_temp": 5000},
+    "quick": {"duration": 20, "end_temp": 4000},
+    "gentle": {"duration": 45, "end_temp": 4000},
+    "custom": {"duration": 30, "end_temp": 5000},
+}
+PROFILE_ORDER = ["standard", "quick", "gentle", "custom"]
+
+# Duration range (5 min increments)
+DURATION_MIN = 10
+DURATION_MAX = 60
+
+# End temperature options (Kelvin)
+END_TEMP_OPTIONS = [4000, 4500, 5000, 5500, 6000, 6500]
+
+# ASCII sun art for header
+SUN_ASCII = """
+       \\   \u2502   /
+        \\  \u2502  /
+      \u2500\u2500\u2500\u2500(\u2609)\u2500\u2500\u2500\u2500
+        /  \u2502  \\
+       /   \u2502   \\
+"""
+
+SUN_ASCII_SMALL = """    \\  \u2502  /
+   \u2500\u2500\u2500(\u2609)\u2500\u2500\u2500
+    /  \u2502  \\"""
+
+# Animation sun art (same as main.py)
+ANIMATION_SUN = [
+    "        \u2502        ",
+    "    \\   \u2502   /    ",
+    "     \\  \u2502  /     ",
+    "      \\ \u2502 /      ",
+    "   \u2500\u2500\u2500\u2500\u2500\u2609\u2500\u2500\u2500\u2500\u2500   ",
+    "      / \u2502 \\      ",
+    "     /  \u2502  \\     ",
+    "    /   \u2502   \\    ",
+    "        \u2502        ",
+]
+
+
+class ConfigField(Static):
+    """A single configurable field with label and value."""
+
+    selected = reactive(False)
+
+    def __init__(
+        self,
+        label: str,
+        value: str,
+        field_id: str,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.label = label
+        self._value = value
+        self.field_id = field_id
+
+    @property
+    def value(self) -> str:
+        return self._value
+
+    @value.setter
+    def value(self, new_value: str) -> None:
+        self._value = new_value
+        self.refresh()
+
+    def render(self) -> Text:
+        text = Text()
+        if self.selected:
+            text.append("  > ", style="bold yellow")
+            text.append(f"{self.label}: ", style="bold yellow")
+            text.append(f"{self._value}", style="bold bright_yellow")
+            text.append(" <", style="bold yellow")
+        else:
+            text.append("    ", style="dim")
+            text.append(f"{self.label}: ", style="dim white")
+            text.append(f"{self._value}", style="white")
+        return text
+
+    def watch_selected(self, selected: bool) -> None:
+        self.refresh()
+
+
+class StatusDisplay(Static):
+    """Displays lamp connection status."""
+
+    status = reactive("Checking...")
+
+    def render(self) -> Text:
+        text = Text()
+        if self.status == "Connected":
+            text.append("    Lamp: ", style="dim")
+            text.append("Connected", style="green")
+        elif self.status == "Checking...":
+            text.append("    Lamp: ", style="dim")
+            text.append("Checking...", style="yellow")
+        else:
+            text.append("    Lamp: ", style="dim")
+            text.append("Not Found", style="red")
+        return text
+
+
+class SunriseInfo(Static):
+    """Displays calculated sunrise start time."""
+
+    wake_time: str = "07:00"
+    duration: int = 30
+
+    def update_info(self, wake_time: str, duration: int) -> None:
+        self.wake_time = wake_time
+        self.duration = duration
+        self.refresh()
+
+    def render(self) -> Text:
+        try:
+            hour, minute = map(int, self.wake_time.split(":"))
+            wake_dt = datetime.now().replace(
+                hour=hour, minute=minute, second=0, microsecond=0
+            )
+            start_dt = wake_dt - timedelta(minutes=self.duration)
+            start_time = start_dt.strftime("%H:%M")
+        except (ValueError, AttributeError):
+            start_time = "--:--"
+
+        text = Text()
+        text.append("\n    Sunrise starts: ", style="dim")
+        text.append(f"{start_time}", style="orange1")
+        text.append(" -> Wake: ", style="dim")
+        text.append(f"{self.wake_time}", style="bright_yellow")
+        return text
+
+
+class SunHeader(Static):
+    """ASCII sun art header."""
+
+    def render(self) -> Text:
+        text = Text()
+        for line in SUN_ASCII_SMALL.split("\n"):
+            text.append(line + "\n", style="bold bright_yellow")
+        text.append("\n")
+        text.append("       Sol", style="bold bright_yellow")
+        text.append(" - Sunrise Alarm\n", style="dim yellow")
+        return text
+
+
+class AnimationScreen(Screen):
+    """Full-screen sunrise animation."""
+
+    BINDINGS = [
+        Binding("escape", "handle_escape", "Back (2x)"),
+        Binding("q", "dismiss", "Exit"),
+    ]
+
+    def __init__(self, auto_return: bool = False) -> None:
+        super().__init__()
+        self._escape_count = 0
+        self._auto_return = auto_return
+
+    def compose(self) -> ComposeResult:
+        yield Static(id="animation-canvas")
+
+    async def on_mount(self) -> None:
+        self.run_animation()
+
+    def action_handle_escape(self) -> None:
+        """Handle escape - need double press to exit."""
+        self._escape_count += 1
+        if self._escape_count >= 2:
+            self.dismiss()
+        else:
+            # Reset after 1 second
+            self.set_timer(1.0, self._reset_escape_count)
+
+    def _reset_escape_count(self) -> None:
+        """Reset escape counter."""
+        self._escape_count = 0
+
+    @work
+    async def run_animation(self) -> None:
+        """Run the sunrise animation."""
+        canvas = self.query_one("#animation-canvas", Static)
+        sun_art = ANIMATION_SUN
+        sun_height = len(sun_art)
+
+        # Messages
+        msg1 = "Let there be light."
+        msg2 = "Welcome to the game."
+        now = datetime.now()
+        msg3 = f"{now.strftime('%A, %B %d')}  {now.strftime('%H:%M')}"
+
+        # Get terminal size
+        width = self.app.size.width
+        height = self.app.size.height - 2
+
+        # Calculate positions
+        msg_row = height // 2
+        sun_final_row = 3
+
+        # Sun starts at bottom, rises to top
+        start_pos = height - 6
+        end_pos = sun_final_row
+        total_frames = start_pos - end_pos
+
+        border_color = "yellow"
+        sun_color = "bright_yellow"
+        sky_bg = "grey19"
+
+        revealed = [False, False, False]
+
+        for frame in range(total_frames + 1):
+            sun_row = max(end_pos, start_pos - frame)
+
+            # Check if sun passed message rows
+            if sun_row < msg_row - 2:
+                revealed[0] = True
+            if sun_row < msg_row:
+                revealed[1] = True
+            if sun_row < msg_row + 2:
+                revealed[2] = True
+
+            # Build the frame
+            lines = []
+
+            # Top border (box drawing)
+            top_border = Text()
+            top_border.append("\u250c", style=border_color)
+            top_border.append("\u2500" * (width - 2), style=border_color)
+            top_border.append("\u2510", style=border_color)
+            lines.append(top_border)
+
+            for row in range(1, height - 1):
+                is_sun_row = sun_row <= row < sun_row + sun_height
+                sun_idx = row - sun_row
+
+                line_text = Text()
+                line_text.append("\u2502", style=border_color)
+
+                if is_sun_row and 0 <= sun_idx < sun_height:
+                    sun_line = sun_art[sun_idx]
+                    pad = (width - 2 - len(sun_line)) // 2
+                    line_text.append(" " * pad, style=f"on {sky_bg}")
+                    line_text.append(sun_line, style=f"{sun_color} on {sky_bg}")
+                    remaining = width - 2 - pad - len(sun_line)
+                    line_text.append(" " * remaining, style=f"on {sky_bg}")
+                elif row == msg_row - 2 and revealed[0]:
+                    pad = (width - 2 - len(msg1)) // 2
+                    line_text.append(" " * pad, style=f"on {sky_bg}")
+                    line_text.append(msg1, style=f"bold bright_yellow on {sky_bg}")
+                    remaining = width - 2 - pad - len(msg1)
+                    line_text.append(" " * remaining, style=f"on {sky_bg}")
+                elif row == msg_row and revealed[1]:
+                    pad = (width - 2 - len(msg2)) // 2
+                    line_text.append(" " * pad, style=f"on {sky_bg}")
+                    line_text.append(msg2, style=f"italic orange1 on {sky_bg}")
+                    remaining = width - 2 - pad - len(msg2)
+                    line_text.append(" " * remaining, style=f"on {sky_bg}")
+                elif row == msg_row + 2 and revealed[2]:
+                    pad = (width - 2 - len(msg3)) // 2
+                    line_text.append(" " * pad, style=f"on {sky_bg}")
+                    line_text.append(msg3, style=f"dim on {sky_bg}")
+                    remaining = width - 2 - pad - len(msg3)
+                    line_text.append(" " * remaining, style=f"on {sky_bg}")
+                else:
+                    line_text.append(" " * (width - 2), style=f"on {sky_bg}")
+
+                line_text.append("\u2502", style=border_color)
+                lines.append(line_text)
+
+            # Bottom border (box drawing)
+            bottom_border = Text()
+            bottom_border.append("\u2514", style=border_color)
+            bottom_border.append("\u2500" * (width - 2), style=border_color)
+            bottom_border.append("\u2518", style=border_color)
+            lines.append(bottom_border)
+
+            # Combine all lines
+            full_text = Text()
+            for i, line in enumerate(lines):
+                if isinstance(line, tuple):
+                    full_text.append(line[0], style=line[1])
+                else:
+                    full_text.append(line)
+                if i < len(lines) - 1:
+                    full_text.append("\n")
+
+            canvas.update(full_text)
+            await asyncio.sleep(0.08)
+
+        # After animation completes
+        if self._auto_return:
+            # Brief pause then auto-return to main menu
+            await asyncio.sleep(1.0)
+            self.dismiss()
+
+
+class SolApp(App):
+    """Sol Sunrise Alarm TUI."""
+
+    CSS = """
+    Screen {
+        background: $surface;
+    }
+
+    #main-container {
+        width: 100%;
+        height: 100%;
+        align: center middle;
+    }
+
+    #config-panel {
+        width: 50;
+        height: auto;
+        padding: 1 2;
+        border: round $primary;
+        background: $surface-darken-1;
+    }
+
+    #sun-header {
+        text-align: center;
+        margin-bottom: 1;
+    }
+
+    .config-field {
+        height: 1;
+        margin: 0 0;
+    }
+
+    #status-display {
+        margin-top: 1;
+    }
+
+    #sunrise-info {
+        margin-top: 0;
+    }
+
+    #instructions {
+        margin-top: 1;
+        text-align: center;
+    }
+
+    Footer {
+        background: $surface-darken-2;
+    }
+
+    AnimationScreen {
+        background: #3d3d3d;
+    }
+
+    #animation-canvas {
+        width: 100%;
+        height: 100%;
+    }
+    """
+
+    BINDINGS = [
+        Binding("up", "move_up", "Up"),
+        Binding("down", "move_down", "Down"),
+        Binding("left", "adjust_left", "Decrease"),
+        Binding("right", "adjust_right", "Increase"),
+        Binding("enter", "confirm", "Start Alarm"),
+        Binding("a", "animate", "Animation"),
+        Binding("q", "quit", "Quit"),
+    ]
+
+    # Reactive state
+    current_field = reactive(0)
+    profile_idx = reactive(0)  # Index into PROFILE_ORDER (default standard)
+    wake_time = reactive("07:00")
+    duration = reactive(30)  # Minutes (5 min increments)
+    end_temp_idx = reactive(2)  # Index into END_TEMP_OPTIONS (default 5000)
+    lamp_status = reactive("Checking...")
+
+    def __init__(self, bulb_ip: str = DEFAULT_BULB_IP) -> None:
+        super().__init__()
+        self.bulb_ip = bulb_ip
+        self.fields: list[ConfigField] = []
+
+    def compose(self) -> ComposeResult:
+        with Center(id="main-container"):
+            with Container(id="config-panel"):
+                yield SunHeader(id="sun-header")
+                yield ConfigField(
+                    "Profile",
+                    PROFILE_ORDER[self.profile_idx].title(),
+                    "profile",
+                    classes="config-field",
+                )
+                yield ConfigField(
+                    "Wake Time",
+                    self.wake_time,
+                    "wake_time",
+                    classes="config-field",
+                )
+                yield ConfigField(
+                    "Duration",
+                    f"{self.duration} min",
+                    "duration",
+                    classes="config-field",
+                )
+                yield ConfigField(
+                    "End Temp",
+                    f"{END_TEMP_OPTIONS[self.end_temp_idx]}K",
+                    "end_temp",
+                    classes="config-field",
+                )
+                yield StatusDisplay(id="status-display")
+                yield SunriseInfo(id="sunrise-info")
+                yield Static(
+                    "\n[dim]Arrow keys to adjust, Enter to start[/dim]",
+                    id="instructions",
+                )
+        yield Footer()
+
+    async def on_mount(self) -> None:
+        """Initialize the app on mount."""
+        # Get field references
+        self.fields = list(self.query(ConfigField))
+
+        # Select the first field
+        if self.fields:
+            self.fields[0].selected = True
+
+        # Update sunrise info
+        self._update_sunrise_info()
+
+        # Check lamp connection
+        self.check_lamp_connection()
+
+    @work(exclusive=True)
+    async def check_lamp_connection(self) -> None:
+        """Check if the lamp is reachable."""
+        status_widget = self.query_one(StatusDisplay)
+        try:
+            bulb = await Device.connect(host=self.bulb_ip)
+            await bulb.update()
+            status_widget.status = "Connected"
+        except Exception:
+            status_widget.status = "Not Found"
+
+    def watch_current_field(self, old: int, new: int) -> None:
+        """Update field selection when current_field changes."""
+        if self.fields:
+            if 0 <= old < len(self.fields):
+                self.fields[old].selected = False
+            if 0 <= new < len(self.fields):
+                self.fields[new].selected = True
+
+    def _update_field_displays(self) -> None:
+        """Update all field display values."""
+        if len(self.fields) >= 4:
+            self.fields[0].value = PROFILE_ORDER[self.profile_idx].title()
+            self.fields[1].value = self.wake_time
+            self.fields[2].value = f"{self.duration} min"
+            self.fields[3].value = f"{END_TEMP_OPTIONS[self.end_temp_idx]}K"
+
+    def _update_sunrise_info(self) -> None:
+        """Update the sunrise info display."""
+        info = self.query_one(SunriseInfo)
+        info.update_info(self.wake_time, self.duration)
+
+    def action_move_up(self) -> None:
+        """Move selection up."""
+        if self.current_field > 0:
+            self.current_field -= 1
+
+    def action_move_down(self) -> None:
+        """Move selection down."""
+        if self.current_field < len(self.fields) - 1:
+            self.current_field += 1
+
+    def action_adjust_left(self) -> None:
+        """Decrease the current field value."""
+        if self.current_field == 0:
+            # Profile: cycle backwards
+            self.profile_idx = (self.profile_idx - 1) % len(PROFILE_ORDER)
+            self._apply_profile()
+        elif self.current_field == 1:
+            # Wake time: decrease by 10 minutes
+            self._adjust_wake_time(-10)
+        elif self.current_field == 2:
+            # Duration: decrease by 5 min (min 10)
+            if self.duration > DURATION_MIN:
+                self.duration -= 5
+                self._set_custom_profile()
+        elif self.current_field == 3:
+            # End temp: previous option
+            if self.end_temp_idx > 0:
+                self.end_temp_idx -= 1
+                self._set_custom_profile()
+
+        self._update_field_displays()
+        self._update_sunrise_info()
+
+    def action_adjust_right(self) -> None:
+        """Increase the current field value."""
+        if self.current_field == 0:
+            # Profile: cycle forwards
+            self.profile_idx = (self.profile_idx + 1) % len(PROFILE_ORDER)
+            self._apply_profile()
+        elif self.current_field == 1:
+            # Wake time: increase by 10 minutes
+            self._adjust_wake_time(10)
+        elif self.current_field == 2:
+            # Duration: increase by 5 min (max 60)
+            if self.duration < DURATION_MAX:
+                self.duration += 5
+                self._set_custom_profile()
+        elif self.current_field == 3:
+            # End temp: next option
+            if self.end_temp_idx < len(END_TEMP_OPTIONS) - 1:
+                self.end_temp_idx += 1
+                self._set_custom_profile()
+
+        self._update_field_displays()
+        self._update_sunrise_info()
+
+    def _apply_profile(self) -> None:
+        """Apply settings from current profile."""
+        profile_name = PROFILE_ORDER[self.profile_idx]
+        if profile_name != "custom":
+            profile = PROFILES[profile_name]
+            self.duration = profile["duration"]
+            self.end_temp_idx = END_TEMP_OPTIONS.index(profile["end_temp"])
+
+    def _set_custom_profile(self) -> None:
+        """Switch to custom profile when manually adjusting settings."""
+        if PROFILE_ORDER[self.profile_idx] != "custom":
+            self.profile_idx = PROFILE_ORDER.index("custom")
+
+    def _adjust_wake_time(self, delta_minutes: int) -> None:
+        """Adjust wake time by delta_minutes."""
+        try:
+            hour, minute = map(int, self.wake_time.split(":"))
+            dt = datetime.now().replace(hour=hour, minute=minute)
+            dt += timedelta(minutes=delta_minutes)
+            self.wake_time = dt.strftime("%H:%M")
+        except ValueError:
+            pass
+
+    def action_animate(self) -> None:
+        """Show the sunrise animation (auto-returns to menu)."""
+        self.push_screen(AnimationScreen(auto_return=True))
+
+    def action_confirm(self) -> None:
+        """Confirm settings and start the alarm."""
+        self.start_alarm()
+
+    @work
+    async def start_alarm(self) -> None:
+        """Turn off lamp and transition to sunrise animation."""
+        # Turn off lamp first
+        try:
+            bulb = await Device.connect(host=self.bulb_ip)
+            await bulb.turn_off()
+        except Exception:
+            pass  # Continue even if lamp not found
+
+        # Store settings for after animation
+        profile_name = PROFILE_ORDER[self.profile_idx]
+        # Map to closest profile for main.py (custom uses standard as base)
+        if profile_name == "custom":
+            # Use closest matching profile based on duration
+            if self.duration <= 20:
+                profile_name = "quick"
+            elif self.duration >= 45:
+                profile_name = "gentle"
+            else:
+                profile_name = "standard"
+
+        self._pending_profile = profile_name
+        self._pending_wake_time = self.wake_time
+        self._pending_duration = self.duration
+
+        # Transition to animation screen
+        self.push_screen(AnimationScreen(), callback=self._on_animation_complete)
+
+    def _on_animation_complete(self, result: None) -> None:
+        """Called when animation screen is dismissed - start the actual sunrise."""
+        self.app_result = {
+            "wake_time": self._pending_wake_time,
+            "profile": self._pending_profile,
+        }
+        self.exit(self.app_result)
+
+
+def run_tui(bulb_ip: str = DEFAULT_BULB_IP) -> None:
+    """Run the Sol TUI application."""
+    import os
+
+    app = SolApp(bulb_ip=bulb_ip)
+    result = app.run()
+
+    # If user confirmed alarm, run the sunrise command in same terminal
+    if result and isinstance(result, dict) and "wake_time" in result:
+        wake_time = result["wake_time"]
+        profile = result["profile"]
+
+        # Change to lamp directory and run with caffeinate
+        lamp_dir = Path(__file__).parent
+        os.chdir(lamp_dir)
+
+        # Replace this process with the sunrise command
+        os.execvp("caffeinate", [
+            "caffeinate", "-d",
+            "uv", "run", "python", "main.py", "up", wake_time, "-p", profile
+        ])
+
+
+if __name__ == "__main__":
+    run_tui()
