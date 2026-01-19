@@ -5,7 +5,6 @@ A beautiful, flicker-free terminal interface for configuring sunrise alarms.
 """
 
 import asyncio
-import subprocess
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -500,7 +499,7 @@ class SolApp(App):
 
     @work
     async def start_alarm(self) -> None:
-        """Turn off lamp and launch alarm in new terminal."""
+        """Turn off lamp and start alarm in same terminal."""
         # Turn off lamp first
         try:
             bulb = await Device.connect(host=self.bulb_ip)
@@ -508,33 +507,42 @@ class SolApp(App):
         except Exception:
             pass  # Continue even if lamp not found
 
-        # Build the command
+        # Build the command args
         duration = DURATION_OPTIONS[self.duration_idx]
-        # Map duration to profile
         profile_map = {20: "quick", 30: "standard", 45: "gentle"}
         profile = profile_map.get(duration, "standard")
 
-        main_py = Path(__file__).parent / "main.py"
-        cmd = f"uv run python {main_py} up {self.wake_time} -p {profile}"
+        # Store command info for after exit
+        self.app_result = {
+            "wake_time": self.wake_time,
+            "profile": profile,
+        }
 
-        # Launch in new Terminal with caffeinate
-        apple_script = f'''
-        tell application "Terminal"
-            activate
-            do script "caffeinate -d {cmd}"
-        end tell
-        '''
-
-        subprocess.run(["osascript", "-e", apple_script], check=False)
-
-        # Exit the TUI
-        self.exit()
+        # Exit the TUI - command will run after
+        self.exit(self.app_result)
 
 
 def run_tui(bulb_ip: str = DEFAULT_BULB_IP) -> None:
     """Run the Sol TUI application."""
+    import os
+
     app = SolApp(bulb_ip=bulb_ip)
-    app.run()
+    result = app.run()
+
+    # If user confirmed alarm, run the sunrise command in same terminal
+    if result and isinstance(result, dict) and "wake_time" in result:
+        wake_time = result["wake_time"]
+        profile = result["profile"]
+
+        # Change to lamp directory and run with caffeinate
+        lamp_dir = Path(__file__).parent
+        os.chdir(lamp_dir)
+
+        # Replace this process with the sunrise command
+        os.execvp("caffeinate", [
+            "caffeinate", "-d",
+            "uv", "run", "python", "main.py", "up", wake_time, "-p", profile
+        ])
 
 
 if __name__ == "__main__":
