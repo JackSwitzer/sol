@@ -65,6 +65,19 @@ const SUN_HEADER = [
   '     /  │  \\     ',
 ];
 
+// Fill entire screen with black - call before transitions
+function fillBlack(stdout: NodeJS.WriteStream | undefined) {
+  if (!stdout) return;
+  const rows = stdout.rows || 24;
+  const cols = stdout.columns || 80;
+  stdout.write('\x1B[48;2;0;0;0m'); // Set background to black
+  stdout.write('\x1B[H'); // Move to top-left
+  for (let i = 0; i < rows; i++) {
+    stdout.write(' '.repeat(cols));
+  }
+  stdout.write('\x1B[H'); // Return to top-left
+}
+
 export default function App() {
   const { exit } = useApp();
   const { stdout } = useStdout();
@@ -98,6 +111,13 @@ export default function App() {
   useEffect(() => {
     checkConnection();
   }, []);
+
+  // Ensure black background when showing menu (initial mount and returning from animation)
+  useEffect(() => {
+    if (animationMode === 'none') {
+      fillBlack(stdout);
+    }
+  }, [animationMode, stdout]);
 
   const applyProfile = useCallback((profileKey: ProfileKey) => {
     if (profileKey !== 'custom') {
@@ -202,8 +222,8 @@ asyncio.run(off())
   }, [settings, exit]);
 
   const handleAnimationComplete = useCallback((cancelled?: boolean) => {
-    // Clear screen before transitioning back to prevent ghosting artifacts
-    stdout?.write('\x1B[2J\x1B[H');
+    // Fill screen with black before transitioning back
+    fillBlack(stdout);
 
     if (pendingAlarmRef.current && !cancelled) {
       pendingAlarmRef.current = false;
@@ -225,16 +245,14 @@ asyncio.run(off())
     }
 
     if (input === 'a' || input === 'A') {
-      // Clear screen before animation to prevent ghosting
-      stdout?.write('\x1B[2J\x1B[H');
+      fillBlack(stdout);
       setAnimationMode('preview');
       return;
     }
 
     if (key.return) {
       pendingAlarmRef.current = true;
-      // Clear screen before animation to prevent ghosting
-      stdout?.write('\x1B[2J\x1B[H');
+      fillBlack(stdout);
       setAnimationMode('confirm');
       return;
     }
