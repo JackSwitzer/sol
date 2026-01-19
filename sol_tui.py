@@ -499,7 +499,7 @@ class SolApp(App):
 
     @work
     async def start_alarm(self) -> None:
-        """Turn off lamp and start alarm in same terminal."""
+        """Turn off lamp and transition to sunrise animation."""
         # Turn off lamp first
         try:
             bulb = await Device.connect(host=self.bulb_ip)
@@ -507,18 +507,21 @@ class SolApp(App):
         except Exception:
             pass  # Continue even if lamp not found
 
-        # Build the command args
+        # Store settings for after animation
         duration = DURATION_OPTIONS[self.duration_idx]
         profile_map = {20: "quick", 30: "standard", 45: "gentle"}
-        profile = profile_map.get(duration, "standard")
+        self._pending_profile = profile_map.get(duration, "standard")
+        self._pending_wake_time = self.wake_time
 
-        # Store command info for after exit
+        # Transition to animation screen
+        self.push_screen(AnimationScreen(), callback=self._on_animation_complete)
+
+    def _on_animation_complete(self, result: None) -> None:
+        """Called when animation screen is dismissed - start the actual sunrise."""
         self.app_result = {
-            "wake_time": self.wake_time,
-            "profile": profile,
+            "wake_time": self._pending_wake_time,
+            "profile": self._pending_profile,
         }
-
-        # Exit the TUI - command will run after
         self.exit(self.app_result)
 
 
