@@ -7,7 +7,8 @@
   "scripts": {
     "start": "bun run src/index.tsx",
     "dev": "bun --watch run src/index.tsx",
-    "build": "bun build src/index.tsx --outdir dist --target node"
+    "build": "bun build src/index.tsx --outdir dist --target node",
+    "stages": "bun run tools/stage-review.tsx"
   },
   "dependencies": {
     "ink": "^5.0.1",

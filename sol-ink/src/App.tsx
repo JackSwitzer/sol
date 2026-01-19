@@ -66,12 +66,14 @@ const SUN_HEADER = [
 ];
 
 // Fill entire screen with black using cursor positioning (no newlines = no scroll)
+// Fill ALL rows including the last one - Ink renders height-1 but we pre-fill everything
 function fillBlack(stdout: NodeJS.WriteStream | undefined) {
   if (!stdout) return;
   const rows = stdout.rows || 24;
   const cols = stdout.columns || 80;
+  stdout.write('\x1B[2J'); // Clear entire screen
   stdout.write('\x1B[48;2;0;0;0m'); // Set background to black
-  // Use cursor positioning for each row instead of newlines
+  // Fill ALL rows including the last one (Ink will render on top of this)
   for (let i = 0; i < rows; i++) {
     stdout.write(`\x1B[${i + 1};1H`); // Move cursor to row i+1, column 1
     stdout.write(' '.repeat(cols));
@@ -236,17 +238,15 @@ asyncio.run(off())
   }, [settings, exit]);
 
   const handleAnimationComplete = useCallback((cancelled?: boolean) => {
-    // Fill screen with black before transitioning back
-    fillBlack(stdout);
-
     if (pendingAlarmRef.current && !cancelled) {
       pendingAlarmRef.current = false;
       startAlarm();
     } else {
       pendingAlarmRef.current = false;
+      // fillBlack is called by useEffect when animationMode changes to 'none'
       setAnimationMode('none');
     }
-  }, [startAlarm, stdout]);
+  }, [startAlarm]);
 
   useInput((input, key) => {
     if (animationMode !== 'none') {
@@ -331,12 +331,19 @@ asyncio.run(off())
   const startTime = calculateStartTime(settings.wakeTime.hour, settings.wakeTime.minute, settings.duration);
   const wakeTimeStr = formatTime(settings.wakeTime.hour, settings.wakeTime.minute);
 
+  // Calculate content height to fill remaining space
+  // Header: 1 margin + 5 sun lines + 1 margin + 2 title lines = 9 rows
+  // Content: 2 margin + settings panel (~10) + 1 margin + 1 time + 1 margin + 1 lamp = ~16 rows
+  // Footer: 2 margin + 1 divider + 1 margin + 1 keybindings = 5 rows
+  // Total fixed content ~ 30 rows, but varies with panel size
+  const contentHeight = dimensions.height - 1;
+
   // Use height - 1 to prevent scroll flicker (known Ink issue)
   return (
     <Box
       flexDirection="column"
       width={dimensions.width}
-      height={dimensions.height - 1}
+      height={contentHeight}
     >
       {/* Header with Sun */}
       <Box flexDirection="column" alignItems="center" marginTop={1}>
@@ -350,8 +357,8 @@ asyncio.run(off())
         </Box>
       </Box>
 
-      {/* Main content area */}
-      <Box justifyContent="center" marginTop={2}>
+      {/* Main content area - flexGrow to fill available space */}
+      <Box justifyContent="center" alignItems="center" marginTop={2} flexGrow={1}>
         <Box flexDirection="column">
           <SettingsPanel
             profile={PROFILES[settings.profile].name}
@@ -383,11 +390,11 @@ asyncio.run(off())
         </Box>
       </Box>
 
-      {/* Footer with keybindings */}
-      <Box justifyContent="center" marginTop={2}>
+      {/* Footer with keybindings - fixed at bottom */}
+      <Box justifyContent="center">
         <Text color="#444">─────────────────────────────────────────</Text>
       </Box>
-      <Box justifyContent="center" marginTop={1}>
+      <Box justifyContent="center" marginTop={1} marginBottom={1}>
         <Text color="#555">[</Text>
         <Text color="#00BFFF">↑↓</Text>
         <Text color="#555">] Select  [</Text>

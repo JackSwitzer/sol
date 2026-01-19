@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Sol Sunrise Alarm - Terminal UI
 # Run with: ./sol-ink
+# Run stage review with: ./sol-ink stages
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -12,5 +13,10 @@ if [ ! -d "node_modules" ]; then
   bun install
 fi
 
-# Run the app
+# Check for stages argument
+if [ "$1" = "stages" ]; then
+  exec bun run tools/stage-review.tsx
+fi
+
+# Run the main app
 exec bun run src/index.tsx "$@"
