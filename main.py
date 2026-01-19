@@ -259,11 +259,11 @@ SUNRISE_PROFILES = {
     "standard": {
         "name": "Standard (30 min)",
         "duration_minutes": 30,
-        "description": "Research-backed 30-min sunrise. Good for most people.",
+        "description": "Research-backed 30-min sunrise with alerting 5000K end.",
         "phases": [
             {"pct": 0.40, "start_brightness": 1,  "end_brightness": 20,  "start_temp": 2500, "end_temp": 2700},
-            {"pct": 0.35, "start_brightness": 20, "end_brightness": 60,  "start_temp": 2700, "end_temp": 3200},
-            {"pct": 0.25, "start_brightness": 60, "end_brightness": 100, "start_temp": 3200, "end_temp": 4000},
+            {"pct": 0.35, "start_brightness": 20, "end_brightness": 60,  "start_temp": 2700, "end_temp": 3500},
+            {"pct": 0.25, "start_brightness": 60, "end_brightness": 100, "start_temp": 3500, "end_temp": 5000},
         ]
     },
     "quick": {
@@ -284,37 +284,6 @@ SUNRISE_PROFILES = {
             {"pct": 0.45, "start_brightness": 1,  "end_brightness": 15,  "start_temp": 2500, "end_temp": 2600},
             {"pct": 0.30, "start_brightness": 15, "end_brightness": 50,  "start_temp": 2600, "end_temp": 3000},
             {"pct": 0.25, "start_brightness": 50, "end_brightness": 100, "start_temp": 3000, "end_temp": 4000},
-        ]
-    },
-    # Ablation test profiles for experimentation
-    "ablation_day1": {
-        "name": "Ablation Day 1: Quick + Cool End",
-        "duration_minutes": 20,
-        "description": "Test: Faster with cooler end temp (more alerting)",
-        "phases": [
-            {"pct": 0.30, "start_brightness": 1,  "end_brightness": 30,  "start_temp": 2500, "end_temp": 3000},
-            {"pct": 0.35, "start_brightness": 30, "end_brightness": 70,  "start_temp": 3000, "end_temp": 4000},
-            {"pct": 0.35, "start_brightness": 70, "end_brightness": 100, "start_temp": 4000, "end_temp": 5000},
-        ]
-    },
-    "ablation_day2": {
-        "name": "Ablation Day 2: Standard + Warm",
-        "duration_minutes": 30,
-        "description": "Test: Standard duration, warmer end temp (gentler)",
-        "phases": [
-            {"pct": 0.40, "start_brightness": 1,  "end_brightness": 20,  "start_temp": 2500, "end_temp": 2700},
-            {"pct": 0.35, "start_brightness": 20, "end_brightness": 60,  "start_temp": 2700, "end_temp": 3000},
-            {"pct": 0.25, "start_brightness": 60, "end_brightness": 100, "start_temp": 3000, "end_temp": 3500},
-        ]
-    },
-    "ablation_day3": {
-        "name": "Ablation Day 3: Long + Oscillating",
-        "duration_minutes": 40,
-        "description": "Test: Longer with gentle brightness oscillation in final phase",
-        "phases": [
-            {"pct": 0.40, "start_brightness": 1,  "end_brightness": 20,  "start_temp": 2500, "end_temp": 2700},
-            {"pct": 0.35, "start_brightness": 20, "end_brightness": 55,  "start_temp": 2700, "end_temp": 3200},
-            {"pct": 0.25, "start_brightness": 55, "end_brightness": 100, "start_temp": 3200, "end_temp": 4000, "oscillate": True},
         ]
     },
 }
@@ -570,6 +539,16 @@ async def schedule_sunrise(wake_time: str, ip: str, profile: str, auto_off_hours
     config = SUNRISE_PROFILES.get(profile, SUNRISE_PROFILES["standard"])
     duration_minutes = config["duration_minutes"]
 
+    # Turn off lamp immediately when alarm is scheduled
+    try:
+        bulb = await Device.connect(host=ip)
+        await bulb.update()
+        if bulb.is_on:
+            await bulb.turn_off()
+            print("Lamp turned off - ready for sunrise")
+    except Exception as e:
+        print(f"Warning: Could not turn off lamp: {e}")
+
     now = datetime.now()
     wake_dt = now.replace(hour=wake_hour, minute=wake_minute, second=0, microsecond=0)
 
@@ -698,26 +677,6 @@ async def cmd_profiles(args):
         print(f"    {config['description']}")
         print(f"    Duration: {config['duration_minutes']} min")
         print()
-
-
-async def cmd_ablation(args):
-    """Show ablation test schedule for next 3 days."""
-    print("3-Day Ablation Test Schedule")
-    print("=" * 40)
-    print()
-
-    now = datetime.now()
-    for i, day_key in enumerate(["ablation_day1", "ablation_day2", "ablation_day3"]):
-        test_date = now + timedelta(days=i)
-        config = SUNRISE_PROFILES[day_key]
-        print(f"Day {i+1} ({test_date.strftime('%A, %b %d')}):")
-        print(f"  Profile: {config['name']}")
-        print(f"  {config['description']}")
-        print(f"  Duration: {config['duration_minutes']} min")
-        print(f"  Command: uv run python main.py at {args.time} -p {day_key}")
-        print()
-
-    print("Tip: Rate your wake quality each day (1-10) to compare!")
 
 
 async def cmd_test_ui(args):
@@ -999,12 +958,6 @@ Profiles: standard (30min), quick (20min), gentle (45min)
     # 'profiles' - list profiles
     profiles_parser = subparsers.add_parser("profiles", help="List available sunrise profiles")
     profiles_parser.set_defaults(func=cmd_profiles)
-
-    # 'ablation' - show test schedule
-    ablation_parser = subparsers.add_parser("ablation", help="Show 3-day ablation test schedule")
-    ablation_parser.add_argument("time", nargs="?", default=DEFAULT_WAKE_TIME,
-                                  help=f"Wake time for tests (default: {DEFAULT_WAKE_TIME})")
-    ablation_parser.set_defaults(func=cmd_ablation)
 
     # 'test-ui' - test terminal UI
     test_ui_parser = subparsers.add_parser("test-ui", help="Test terminal UI in isolation")

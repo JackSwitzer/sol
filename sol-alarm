@@ -1,0 +1,137 @@
+#!/bin/bash
+# sol-alarm - Robust sunrise alarm launcher
+# Usage: sol-alarm <wake-time> [profile]
+# Example: sol-alarm 08:30
+#          sol-alarm 08:30 gentle
+
+set -e
+
+LAMP_DIR=~/Desktop/Lamp
+LAMP_IP="192.168.1.77"
+LOG_FILE="/tmp/sol-sunrise.log"
+PID_FILE="/tmp/sol-sunrise.pid"
+DEFAULT_PROFILE="standard"  # 30 min (use 'caffeinated' for 20 min alerting)
+
+cd "$LAMP_DIR"
+
+# Parse args
+WAKE_TIME="${1:-}"
+PROFILE="${2:-$DEFAULT_PROFILE}"
+
+if [ -z "$WAKE_TIME" ]; then
+    echo "Usage: sol-alarm <wake-time> [profile]"
+    echo ""
+    echo "Profiles:"
+    echo "  standard  - 30 min, 5000K end [default]"
+    echo "  quick     - 20 min, 4000K end"
+    echo "  gentle    - 45 min, 4000K end"
+    echo ""
+    echo "Examples:"
+    echo "  sol-alarm 08:30         # Wake at 8:30, 30 min"
+    echo "  sol-alarm 07:00 gentle  # Wake at 7:00, 45 min"
+    exit 1
+fi
+
+# Validate time format
+if ! [[ "$WAKE_TIME" =~ ^[0-9]{1,2}:[0-9]{2}$ ]]; then
+    echo "Error: Invalid time format. Use HH:MM (e.g., 08:30)"
+    exit 1
+fi
+
+echo "=== Sol Alarm Setup ==="
+echo ""
+
+# Kill any existing alarm
+if [ -f "$PID_FILE" ]; then
+    OLD_PID=$(cat "$PID_FILE")
+    if kill -0 "$OLD_PID" 2>/dev/null; then
+        echo "Killing existing alarm (PID: $OLD_PID)..."
+        kill "$OLD_PID" 2>/dev/null || true
+        sleep 1
+    fi
+    rm -f "$PID_FILE"
+fi
+
+# Also kill any stray processes
+pkill -f "python main.py" 2>/dev/null || true
+pkill -f "caffeinate.*sol" 2>/dev/null || true
+sleep 0.5
+
+# Test lamp connection
+echo "Testing lamp connection..."
+if ! uv run python -c "
+import asyncio
+from kasa import Device
+
+async def test():
+    try:
+        bulb = await Device.connect(host='$LAMP_IP')
+        await bulb.update()
+        print(f'Connected: {bulb.alias} (on={bulb.is_on})')
+        return True
+    except Exception as e:
+        print(f'FAILED: {e}')
+        return False
+
+exit(0 if asyncio.run(test()) else 1)
+"; then
+    echo ""
+    echo "ERROR: Cannot connect to lamp at $LAMP_IP"
+    echo "Check that:"
+    echo "  1. Lamp is plugged in"
+    echo "  2. You're on the same WiFi network"
+    echo "  3. IP address is correct"
+    exit 1
+fi
+
+# Turn off lamp
+echo "Turning off lamp..."
+uv run python -c "
+import asyncio
+from kasa import Device
+
+async def off():
+    bulb = await Device.connect(host='$LAMP_IP')
+    await bulb.turn_off()
+    print('Lamp off')
+
+asyncio.run(off())
+"
+
+echo ""
+echo "Starting alarm..."
+echo "  Wake time: $WAKE_TIME"
+echo "  Profile: $PROFILE"
+echo ""
+
+# Launch with caffeinate to prevent Mac sleep
+# -i = prevent idle sleep
+# -s = prevent system sleep
+nohup caffeinate -is bash -c "
+    cd '$LAMP_DIR'
+    uv run python main.py up '$WAKE_TIME' -p '$PROFILE' --no-auto-off
+" > "$LOG_FILE" 2>&1 &
+
+ALARM_PID=$!
+echo "$ALARM_PID" > "$PID_FILE"
+
+sleep 2
+
+# Verify it started
+if ! kill -0 "$ALARM_PID" 2>/dev/null; then
+    echo "ERROR: Alarm failed to start. Check log:"
+    cat "$LOG_FILE"
+    exit 1
+fi
+
+# Show status
+echo "=== Alarm Active ==="
+head -1 "$LOG_FILE" 2>/dev/null || echo "(waiting for output...)"
+echo ""
+echo "PID: $ALARM_PID"
+echo "Log: $LOG_FILE"
+echo ""
+echo "Commands:"
+echo "  tail -f $LOG_FILE    # Watch progress"
+echo "  kill $ALARM_PID      # Cancel alarm"
+echo "  sol off              # Turn off lamp"
