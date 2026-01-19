@@ -65,14 +65,15 @@ const SUN_HEADER = [
   '     /  │  \\     ',
 ];
 
-// Fill entire screen with black - call before transitions
+// Fill entire screen with black using cursor positioning (no newlines = no scroll)
 function fillBlack(stdout: NodeJS.WriteStream | undefined) {
   if (!stdout) return;
   const rows = stdout.rows || 24;
   const cols = stdout.columns || 80;
   stdout.write('\x1B[48;2;0;0;0m'); // Set background to black
-  stdout.write('\x1B[H'); // Move to top-left
+  // Use cursor positioning for each row instead of newlines
   for (let i = 0; i < rows; i++) {
+    stdout.write(`\x1B[${i + 1};1H`); // Move cursor to row i+1, column 1
     stdout.write(' '.repeat(cols));
   }
   stdout.write('\x1B[H'); // Return to top-left
@@ -86,6 +87,10 @@ export default function App() {
   const [animationMode, setAnimationMode] = useState<'none' | 'preview' | 'confirm'>('none');
   const { connected, checking, checkConnection } = useLampConnection();
   const pendingAlarmRef = useRef(false);
+
+  // Double-escape to exit from menu
+  const [escapeCount, setEscapeCount] = useState(0);
+  const escapeTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   // Get terminal dimensions
   const [dimensions, setDimensions] = useState({
@@ -110,6 +115,15 @@ export default function App() {
   // Check lamp connection on mount
   useEffect(() => {
     checkConnection();
+  }, []);
+
+  // Cleanup escape timer on unmount
+  useEffect(() => {
+    return () => {
+      if (escapeTimerRef.current) {
+        clearTimeout(escapeTimerRef.current);
+      }
+    };
   }, []);
 
   // Ensure black background when showing menu (initial mount and returning from animation)
@@ -241,6 +255,24 @@ asyncio.run(off())
 
     if (input === 'q' || input === 'Q') {
       exit();
+      return;
+    }
+
+    // Double-escape to exit from menu
+    if (key.escape) {
+      if (escapeTimerRef.current) {
+        clearTimeout(escapeTimerRef.current);
+        escapeTimerRef.current = null;
+      }
+      if (escapeCount >= 1) {
+        exit();
+      } else {
+        setEscapeCount(1);
+        escapeTimerRef.current = setTimeout(() => {
+          escapeTimerRef.current = null;
+          setEscapeCount(0);
+        }, 1000);
+      }
       return;
     }
 
