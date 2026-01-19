@@ -178,10 +178,10 @@ class AnimationScreen(Screen):
         Binding("q", "dismiss", "Exit"),
     ]
 
-    def __init__(self) -> None:
+    def __init__(self, auto_return: bool = False) -> None:
         super().__init__()
         self._escape_count = 0
-        self._escape_timer = None
+        self._auto_return = auto_return
 
     def compose(self) -> ComposeResult:
         yield Static(id="animation-canvas")
@@ -312,6 +312,12 @@ class AnimationScreen(Screen):
 
             canvas.update(full_text)
             await asyncio.sleep(0.08)
+
+        # After animation completes
+        if self._auto_return:
+            # Brief pause then auto-return to main menu
+            await asyncio.sleep(1.0)
+            self.dismiss()
 
 
 class SolApp(App):
@@ -559,8 +565,8 @@ class SolApp(App):
             pass
 
     def action_animate(self) -> None:
-        """Show the sunrise animation."""
-        self.push_screen(AnimationScreen())
+        """Show the sunrise animation (auto-returns to menu)."""
+        self.push_screen(AnimationScreen(auto_return=True))
 
     def action_confirm(self) -> None:
         """Confirm settings and start the alarm."""
