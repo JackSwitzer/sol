@@ -22,8 +22,18 @@ from textual.widgets import Footer, Static
 # Default configuration
 DEFAULT_BULB_IP = "192.168.1.77"
 
-# Duration options (minutes)
-DURATION_OPTIONS = [20, 30, 45]
+# Profiles (presets)
+PROFILES = {
+    "standard": {"duration": 30, "end_temp": 5000},
+    "quick": {"duration": 20, "end_temp": 4000},
+    "gentle": {"duration": 45, "end_temp": 4000},
+    "custom": {"duration": 30, "end_temp": 5000},
+}
+PROFILE_ORDER = ["standard", "quick", "gentle", "custom"]
+
+# Duration range (5 min increments)
+DURATION_MIN = 10
+DURATION_MAX = 60
 
 # End temperature options (Kelvin)
 END_TEMP_OPTIONS = [4000, 4500, 5000, 5500, 6000, 6500]
@@ -164,15 +174,33 @@ class AnimationScreen(Screen):
     """Full-screen sunrise animation."""
 
     BINDINGS = [
-        Binding("escape", "dismiss", "Exit"),
+        Binding("escape", "handle_escape", "Back (2x)"),
         Binding("q", "dismiss", "Exit"),
     ]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._escape_count = 0
+        self._escape_timer = None
 
     def compose(self) -> ComposeResult:
         yield Static(id="animation-canvas")
 
     async def on_mount(self) -> None:
         self.run_animation()
+
+    def action_handle_escape(self) -> None:
+        """Handle escape - need double press to exit."""
+        self._escape_count += 1
+        if self._escape_count >= 2:
+            self.dismiss()
+        else:
+            # Reset after 1 second
+            self.set_timer(1.0, self._reset_escape_count)
+
+    def _reset_escape_count(self) -> None:
+        """Reset escape counter."""
+        self._escape_count = 0
 
     @work
     async def run_animation(self) -> None:
@@ -349,9 +377,10 @@ class SolApp(App):
 
     # Reactive state
     current_field = reactive(0)
+    profile_idx = reactive(0)  # Index into PROFILE_ORDER (default standard)
     wake_time = reactive("07:00")
-    duration_idx = reactive(1)  # Index into DURATION_OPTIONS (default 30)
-    end_temp_idx = reactive(0)  # Index into END_TEMP_OPTIONS (default 4000)
+    duration = reactive(30)  # Minutes (5 min increments)
+    end_temp_idx = reactive(2)  # Index into END_TEMP_OPTIONS (default 5000)
     lamp_status = reactive("Checking...")
 
     def __init__(self, bulb_ip: str = DEFAULT_BULB_IP) -> None:
@@ -364,6 +393,12 @@ class SolApp(App):
             with Container(id="config-panel"):
                 yield SunHeader(id="sun-header")
                 yield ConfigField(
+                    "Profile",
+                    PROFILE_ORDER[self.profile_idx].title(),
+                    "profile",
+                    classes="config-field",
+                )
+                yield ConfigField(
                     "Wake Time",
                     self.wake_time,
                     "wake_time",
@@ -371,7 +406,7 @@ class SolApp(App):
                 )
                 yield ConfigField(
                     "Duration",
-                    f"{DURATION_OPTIONS[self.duration_idx]} min",
+                    f"{self.duration} min",
                     "duration",
                     classes="config-field",
                 )
@@ -425,15 +460,16 @@ class SolApp(App):
 
     def _update_field_displays(self) -> None:
         """Update all field display values."""
-        if len(self.fields) >= 3:
-            self.fields[0].value = self.wake_time
-            self.fields[1].value = f"{DURATION_OPTIONS[self.duration_idx]} min"
-            self.fields[2].value = f"{END_TEMP_OPTIONS[self.end_temp_idx]}K"
+        if len(self.fields) >= 4:
+            self.fields[0].value = PROFILE_ORDER[self.profile_idx].title()
+            self.fields[1].value = self.wake_time
+            self.fields[2].value = f"{self.duration} min"
+            self.fields[3].value = f"{END_TEMP_OPTIONS[self.end_temp_idx]}K"
 
     def _update_sunrise_info(self) -> None:
         """Update the sunrise info display."""
         info = self.query_one(SunriseInfo)
-        info.update_info(self.wake_time, DURATION_OPTIONS[self.duration_idx])
+        info.update_info(self.wake_time, self.duration)
 
     def action_move_up(self) -> None:
         """Move selection up."""
@@ -448,16 +484,22 @@ class SolApp(App):
     def action_adjust_left(self) -> None:
         """Decrease the current field value."""
         if self.current_field == 0:
-            # Wake time: decrease by 5 minutes
-            self._adjust_wake_time(-5)
+            # Profile: cycle backwards
+            self.profile_idx = (self.profile_idx - 1) % len(PROFILE_ORDER)
+            self._apply_profile()
         elif self.current_field == 1:
-            # Duration: previous option
-            if self.duration_idx > 0:
-                self.duration_idx -= 1
+            # Wake time: decrease by 10 minutes
+            self._adjust_wake_time(-10)
         elif self.current_field == 2:
+            # Duration: decrease by 5 min (min 10)
+            if self.duration > DURATION_MIN:
+                self.duration -= 5
+                self._set_custom_profile()
+        elif self.current_field == 3:
             # End temp: previous option
             if self.end_temp_idx > 0:
                 self.end_temp_idx -= 1
+                self._set_custom_profile()
 
         self._update_field_displays()
         self._update_sunrise_info()
@@ -465,19 +507,38 @@ class SolApp(App):
     def action_adjust_right(self) -> None:
         """Increase the current field value."""
         if self.current_field == 0:
-            # Wake time: increase by 5 minutes
-            self._adjust_wake_time(5)
+            # Profile: cycle forwards
+            self.profile_idx = (self.profile_idx + 1) % len(PROFILE_ORDER)
+            self._apply_profile()
         elif self.current_field == 1:
-            # Duration: next option
-            if self.duration_idx < len(DURATION_OPTIONS) - 1:
-                self.duration_idx += 1
+            # Wake time: increase by 10 minutes
+            self._adjust_wake_time(10)
         elif self.current_field == 2:
+            # Duration: increase by 5 min (max 60)
+            if self.duration < DURATION_MAX:
+                self.duration += 5
+                self._set_custom_profile()
+        elif self.current_field == 3:
             # End temp: next option
             if self.end_temp_idx < len(END_TEMP_OPTIONS) - 1:
                 self.end_temp_idx += 1
+                self._set_custom_profile()
 
         self._update_field_displays()
         self._update_sunrise_info()
+
+    def _apply_profile(self) -> None:
+        """Apply settings from current profile."""
+        profile_name = PROFILE_ORDER[self.profile_idx]
+        if profile_name != "custom":
+            profile = PROFILES[profile_name]
+            self.duration = profile["duration"]
+            self.end_temp_idx = END_TEMP_OPTIONS.index(profile["end_temp"])
+
+    def _set_custom_profile(self) -> None:
+        """Switch to custom profile when manually adjusting settings."""
+        if PROFILE_ORDER[self.profile_idx] != "custom":
+            self.profile_idx = PROFILE_ORDER.index("custom")
 
     def _adjust_wake_time(self, delta_minutes: int) -> None:
         """Adjust wake time by delta_minutes."""
@@ -508,10 +569,20 @@ class SolApp(App):
             pass  # Continue even if lamp not found
 
         # Store settings for after animation
-        duration = DURATION_OPTIONS[self.duration_idx]
-        profile_map = {20: "quick", 30: "standard", 45: "gentle"}
-        self._pending_profile = profile_map.get(duration, "standard")
+        profile_name = PROFILE_ORDER[self.profile_idx]
+        # Map to closest profile for main.py (custom uses standard as base)
+        if profile_name == "custom":
+            # Use closest matching profile based on duration
+            if self.duration <= 20:
+                profile_name = "quick"
+            elif self.duration >= 45:
+                profile_name = "gentle"
+            else:
+                profile_name = "standard"
+
+        self._pending_profile = profile_name
         self._pending_wake_time = self.wake_time
+        self._pending_duration = self.duration
 
         # Transition to animation screen
         self.push_screen(AnimationScreen(), callback=self._on_animation_complete)
