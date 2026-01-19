@@ -8,43 +8,57 @@ interface AnimationProps {
   onComplete: (cancelled?: boolean) => void;
 }
 
-// Perfectly symmetric sun stages - each line same width for clean rendering
+// Sun stages using ASCII only for consistent character widths
+// Each line in a stage is padded to exactly the same length
+const W0 = 3, W1 = 7, W2 = 11, W3 = 17, W4 = 25;
+const pad = (s: string, w: number) => {
+  const left = Math.floor((w - s.length) / 2);
+  const right = w - s.length - left;
+  return ' '.repeat(left) + s + ' '.repeat(right);
+};
+
 const SUN_STAGES = [
-  // Stage 0: First light - tiny dot, barely visible (5 chars)
+  // Stage 0: First light - tiny dot
+  [pad('.', W0)],
+
+  // Stage 1: Emerging - small circle
   [
-    '  ·  ',
+    pad('.', W1),
+    pad('(o)', W1),
+    pad('.', W1),
   ],
-  // Stage 1: Emerging - small circle appearing (7 chars)
+
+  // Stage 2: Rising - with small rays
   [
-    '   ·   ',
-    '  (○)  ',
-    '   ·   ',
+    pad('\\   /', W2),
+    pad('\\ | /', W2),
+    pad('--O--', W2),
+    pad('/ | \\', W2),
+    pad('/   \\', W2),
   ],
-  // Stage 2: Rising - circle with small rays (11 chars)
+
+  // Stage 3: Growing - larger sun
   [
-    '    \\│/    ',
-    '   ─(●)─   ',
-    '    /│\\    ',
+    pad('\\    |    /', W3),
+    pad('\\   |   /', W3),
+    pad('\\  |  /', W3),
+    pad('-----O-----', W3),
+    pad('/  |  \\', W3),
+    pad('/   |   \\', W3),
+    pad('/    |    \\', W3),
   ],
-  // Stage 3: Growing - sun with longer rays (17 chars)
+
+  // Stage 4: Full radiant sun - final size
   [
-    '    \\   │   /    ',
-    '     \\  │  /     ',
-    '   ────(◉)────   ',
-    '     /  │  \\     ',
-    '    /   │   \\    ',
-  ],
-  // Stage 4: Full radiant sun - dramatic with long rays (25 chars)
-  [
-    '       \\    │    /       ',
-    '        \\   │   /        ',
-    '    \\    \\  │  /    /    ',
-    '     \\    \\ │ /    /     ',
-    '   ──────── ☀ ────────   ',
-    '     /    / │ \\    \\     ',
-    '    /    /  │  \\    \\    ',
-    '        /   │   \\        ',
-    '       /    │    \\       ',
+    pad('\\      |      /', W4),
+    pad('\\     |     /', W4),
+    pad('\\    |    /', W4),
+    pad('\\   |   /', W4),
+    pad('-----------@-----------', W4),
+    pad('/   |   \\', W4),
+    pad('/    |    \\', W4),
+    pad('/     |     \\', W4),
+    pad('/      |      \\', W4),
   ],
 ];
 
@@ -232,8 +246,8 @@ export default function Animation({ width, height, autoReturn, onComplete }: Ani
   const rawSunY = Math.floor(sunBottomStart - (sunBottomStart - sunTopEnd) * riseProgress);
   const sunY = Math.max(1, rawSunY);
 
-  // Sun stage transitions (with slight overlap for smoothness)
-  const sunStageIndex = Math.min(Math.floor(progress * 4.5), 4);
+  // Sun stage transitions - reaches full size at 80% progress, stays full for last 20%
+  const sunStageIndex = Math.min(Math.floor(progress * 5), 4);
   const sunArt = SUN_STAGES[sunStageIndex];
   const sunHeight = sunArt.length;
 

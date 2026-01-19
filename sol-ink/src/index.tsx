@@ -6,6 +6,7 @@ import App from './App.js';
 
 // Cleanup function to restore terminal state
 function cleanup() {
+  process.stdout.write('\x1B[0m'); // Reset all colors/attributes
   process.stdout.write('\x1B[?25h'); // Show cursor
   process.stdout.write('\x1B[?1049l'); // Exit alternate screen buffer
 }
@@ -35,10 +36,19 @@ process.on('SIGTERM', () => {
 });
 
 // Enter alternate screen buffer for clean full-screen TUI
-// This isolates our rendering from the main terminal and prevents ghosting
 process.stdout.write('\x1B[?1049h'); // Enter alternate screen buffer
 process.stdout.write('\x1B[?25l'); // Hide cursor
-process.stdout.write('\x1B[2J\x1B[H'); // Clear alternate screen
+process.stdout.write('\x1B[48;2;0;0;0m'); // Set background to pure black
+process.stdout.write('\x1B[38;2;255;255;255m'); // Set foreground to white
+process.stdout.write('\x1B[2J\x1B[H'); // Clear screen with black background
+
+// Fill entire screen with black to ensure no terminal background shows through
+const rows = process.stdout.rows || 24;
+const cols = process.stdout.columns || 80;
+for (let i = 0; i < rows; i++) {
+  process.stdout.write(' '.repeat(cols));
+}
+process.stdout.write('\x1B[H'); // Return cursor to top-left
 
 const { waitUntilExit } = render(<App />, {
   // Prevent Ink from showing cursor on exit - we manage it ourselves
