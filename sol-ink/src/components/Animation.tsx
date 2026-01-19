@@ -263,20 +263,11 @@ export default function Animation({ width, height, autoReturn, onComplete }: Ani
   const now = new Date();
   const dateStr = `${now.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}  ·  ${now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}`;
 
-  // Build the scene
+  // Build the scene - TRUE full screen, no borders, fill every pixel
   const lines: React.ReactNode[] = [];
-  const innerWidth = width - 2;
 
-  // Top border
-  lines.push(
-    <Box key="top" width={width}>
-      <Text color={colors.border}>╭{'─'.repeat(innerWidth)}╮</Text>
-    </Box>
-  );
-
-  // Content rows fill the space between top and bottom borders
-  // Using height - 2 accounts for top/bottom borders, -1 more for the height-1 container
-  for (let row = 1; row < height - 2; row++) {
+  // Fill every row from 0 to height-1 with sky background
+  for (let row = 0; row < height - 1; row++) {
     const isSunRow = row >= sunY && row < sunY + sunHeight;
     const sunRowIndex = row - sunY;
     const isMessage1Row = row === messageY - 1;
@@ -284,86 +275,68 @@ export default function Animation({ width, height, autoReturn, onComplete }: Ani
     const isDateRow = row === messageY + 5;
     const isHorizonRow = row === horizonY;
 
-    let content: React.ReactNode;
+    // Build the full-width row content
+    let rowContent: string;
+    let rowColor = colors.sky; // default sky color for text
+    let isBold = false;
+    let isItalic = false;
+    let isDim = false;
 
     if (isSunRow && sunRowIndex >= 0 && sunRowIndex < sunHeight) {
-      // Sun row - perfectly centered
+      // Sun row - center the sun art in the full width
       const sunLine = sunArt[sunRowIndex];
-      const totalPad = innerWidth - sunLine.length;
+      const totalPad = width - sunLine.length;
       const leftPad = Math.floor(totalPad / 2);
       const rightPad = totalPad - leftPad;
-
-      content = (
-        <>
-          <Text backgroundColor={colors.sky}>{' '.repeat(leftPad)}</Text>
-          <Text color={colors.sun} backgroundColor={colors.sky} bold>{sunLine}</Text>
-          <Text backgroundColor={colors.sky}>{' '.repeat(rightPad)}</Text>
-        </>
-      );
+      rowContent = ' '.repeat(leftPad) + sunLine + ' '.repeat(rightPad);
+      rowColor = colors.sun;
+      isBold = true;
     } else if (isMessage1Row && showMessage1) {
-      const totalPad = innerWidth - MSG1.length;
+      const totalPad = width - MSG1.length;
       const leftPad = Math.floor(totalPad / 2);
       const rightPad = totalPad - leftPad;
-
-      content = (
-        <>
-          <Text backgroundColor={colors.sky}>{' '.repeat(leftPad)}</Text>
-          <Text color={colors.text} backgroundColor={colors.sky} bold>{MSG1}</Text>
-          <Text backgroundColor={colors.sky}>{' '.repeat(rightPad)}</Text>
-        </>
-      );
+      rowContent = ' '.repeat(leftPad) + MSG1 + ' '.repeat(rightPad);
+      rowColor = colors.text;
+      isBold = true;
     } else if (isMessage2Row && showMessage2) {
-      const totalPad = innerWidth - MSG2.length;
+      const totalPad = width - MSG2.length;
       const leftPad = Math.floor(totalPad / 2);
       const rightPad = totalPad - leftPad;
-
-      content = (
-        <>
-          <Text backgroundColor={colors.sky}>{' '.repeat(leftPad)}</Text>
-          <Text color={colors.text} backgroundColor={colors.sky} italic>{MSG2}</Text>
-          <Text backgroundColor={colors.sky}>{' '.repeat(rightPad)}</Text>
-        </>
-      );
+      rowContent = ' '.repeat(leftPad) + MSG2 + ' '.repeat(rightPad);
+      rowColor = colors.text;
+      isItalic = true;
     } else if (isDateRow && showMessage2) {
-      const totalPad = innerWidth - dateStr.length;
+      const totalPad = width - dateStr.length;
       const leftPad = Math.floor(totalPad / 2);
       const rightPad = totalPad - leftPad;
-
-      content = (
-        <>
-          <Text backgroundColor={colors.sky}>{' '.repeat(leftPad)}</Text>
-          <Text color={colors.text} backgroundColor={colors.sky} dimColor>{dateStr}</Text>
-          <Text backgroundColor={colors.sky}>{' '.repeat(rightPad)}</Text>
-        </>
-      );
+      rowContent = ' '.repeat(leftPad) + dateStr + ' '.repeat(rightPad);
+      rowColor = colors.text;
+      isDim = true;
     } else if (isHorizonRow) {
-      // Horizon line that brightens with progress
+      // Horizon line spans full width
       const horizonChar = progress > 0.4 ? '─' : progress > 0.2 ? '·' : ' ';
-      content = (
-        <Text color={colors.sun} backgroundColor={colors.sky} dimColor>
-          {horizonChar.repeat(innerWidth)}
-        </Text>
-      );
+      rowContent = horizonChar.repeat(width);
+      rowColor = colors.sun;
+      isDim = true;
     } else {
-      // Empty sky
-      content = <Text backgroundColor={colors.sky}>{' '.repeat(innerWidth)}</Text>;
+      // Empty sky - full width of spaces
+      rowContent = ' '.repeat(width);
     }
 
     lines.push(
       <Box key={`row-${row}`} width={width}>
-        <Text color={colors.border}>│</Text>
-        {content}
-        <Text color={colors.border}>│</Text>
+        <Text
+          color={rowColor}
+          backgroundColor={colors.sky}
+          bold={isBold}
+          italic={isItalic}
+          dimColor={isDim}
+        >
+          {rowContent}
+        </Text>
       </Box>
     );
   }
-
-  // Bottom border
-  lines.push(
-    <Box key="bottom" width={width}>
-      <Text color={colors.border}>╰{'─'.repeat(innerWidth)}╯</Text>
-    </Box>
-  );
 
   // Use height - 1 to prevent scroll flicker (known Ink issue)
   return (
