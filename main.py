@@ -88,49 +88,59 @@ def render_setup_screen(wake_hour: int, wake_min: int, duration: int, max_temp: 
     width = term.columns
     height = term.lines - 1
 
-    # Colors - sunrise gradient palette
-    night_bg = "grey7"
+    # Colors - sunrise gradient palette on dark background
+    bg = "on grey3"  # Very dark background
     accent = "orange1"
     highlight = "bright_yellow"
-    dim = "grey50"
+    dim = "grey58"
 
+    # Set dark background for entire terminal
     console.clear()
+    # Fill screen with dark background
+    sys.stdout.write("\033[48;5;233m")  # Set bg to grey3 (ANSI 233)
+    sys.stdout.write("\033[2J")  # Clear with that background
+    sys.stdout.flush()
 
     # Calculate vertical centering
     content_height = 24
     top_pad = max(0, (height - content_height) // 2)
 
+    # Style helper - everything on dark bg
+    def p(text, style=""):
+        console.print(text, style=f"{style} on grey3")
+
     # Top padding
     for _ in range(top_pad):
-        console.print()
+        p(" " * width)
 
     # Header with sun
-    console.print()
+    p(" " * width)
+    sun_colors = ["grey42", "grey50", "dark_orange", "dark_orange", highlight,
+                  "dark_orange", "dark_orange", "grey50", "grey42"]
     for i, line in enumerate(SUN_ASCII):
-        color = ["grey30", "grey50", "orange1", "orange1", "bright_yellow",
-                 "orange1", "orange1", "grey50", "grey30"][i]
         centered = line.center(width)
-        console.print(centered, style=color)
+        p(centered, sun_colors[i])
 
-    console.print()
+    p(" " * width)
     title = "S O L"
     subtitle = "sunrise alarm"
-    console.print(title.center(width), style="bold bright_yellow")
-    console.print(subtitle.center(width), style="dim orange1")
-    console.print()
+    p(title.center(width), f"bold {highlight}")
+    p(subtitle.center(width), "dim dark_orange")
+    p(" " * width)
 
     # Lamp status
     status_color = "green" if "Connected" in lamp_status else "red"
-    console.print(f"◉ {lamp_status}".center(width), style=status_color)
-    console.print()
+    p(f"◉ {lamp_status}".center(width), status_color)
+    p(" " * width)
 
     # Settings panel
     box_width = 44
     pad = (width - box_width) // 2
     left_pad = " " * pad
+    right_pad = " " * (width - box_width - pad)
 
     # Box top
-    console.print(f"{left_pad}╭{'─' * (box_width - 2)}╮", style=dim)
+    p(f"{left_pad}╭{'─' * (box_width - 2)}╮{right_pad}", dim)
 
     # Wake time field
     field_0_style = f"bold {highlight}" if selected_field == 0 else dim
@@ -138,10 +148,10 @@ def render_setup_screen(wake_hour: int, wake_min: int, duration: int, max_temp: 
     arrow_l = "◀ " if selected_field == 0 else "  "
     arrow_r = " ▶" if selected_field == 0 else "  "
     line = f"│  WAKE TIME        {arrow_l}[{field_0_style}]{wake_str}[/{field_0_style}]{arrow_r}       │"
-    console.print(f"{left_pad}{line}", style=dim)
+    p(f"{left_pad}{line}{right_pad}", dim)
 
     # Spacer
-    console.print(f"{left_pad}│{' ' * (box_width - 2)}│", style=dim)
+    p(f"{left_pad}│{' ' * (box_width - 2)}│{right_pad}", dim)
 
     # Duration field
     field_1_style = f"bold {highlight}" if selected_field == 1 else dim
@@ -149,10 +159,10 @@ def render_setup_screen(wake_hour: int, wake_min: int, duration: int, max_temp: 
     arrow_l = "◀ " if selected_field == 1 else "  "
     arrow_r = " ▶" if selected_field == 1 else "  "
     line = f"│  DURATION         {arrow_l}[{field_1_style}]{duration_str:>5}[/{field_1_style}]{arrow_r}       │"
-    console.print(f"{left_pad}{line}", style=dim)
+    p(f"{left_pad}{line}{right_pad}", dim)
 
     # Spacer
-    console.print(f"{left_pad}│{' ' * (box_width - 2)}│", style=dim)
+    p(f"{left_pad}│{' ' * (box_width - 2)}│{right_pad}", dim)
 
     # Max temp field
     field_2_style = f"bold {highlight}" if selected_field == 2 else dim
@@ -160,12 +170,12 @@ def render_setup_screen(wake_hour: int, wake_min: int, duration: int, max_temp: 
     arrow_l = "◀ " if selected_field == 2 else "  "
     arrow_r = " ▶" if selected_field == 2 else "  "
     line = f"│  END TEMP         {arrow_l}[{field_2_style}]{temp_str:>5}[/{field_2_style}]{arrow_r}       │"
-    console.print(f"{left_pad}{line}", style=dim)
+    p(f"{left_pad}{line}{right_pad}", dim)
 
     # Box bottom
-    console.print(f"{left_pad}╰{'─' * (box_width - 2)}╯", style=dim)
+    p(f"{left_pad}╰{'─' * (box_width - 2)}╯{right_pad}", dim)
 
-    console.print()
+    p(" " * width)
 
     # Calculate and show sunrise start time
     duration_td = timedelta(minutes=duration)
@@ -175,20 +185,25 @@ def render_setup_screen(wake_hour: int, wake_min: int, duration: int, max_temp: 
     start_time = wake_time - duration_td
 
     info = f"Sunrise: {start_time.strftime('%H:%M')} → Wake: {wake_time.strftime('%H:%M')}"
-    console.print(info.center(width), style="orange1")
+    p(info.center(width), "dark_orange")
 
-    console.print()
-    console.print()
+    p(" " * width)
+    p(" " * width)
 
     # Action buttons
     btn_start = " [ ENTER ] Start Alarm "
     btn_quit = " [ Q ] Quit "
     buttons = f"{btn_start}     {btn_quit}"
-    console.print(buttons.center(width), style=dim)
+    p(buttons.center(width), dim)
 
     # Instructions
-    console.print()
-    console.print("↑↓ select  ←→ adjust".center(width), style="grey35")
+    p(" " * width)
+    p("↑↓ select  ←→ adjust".center(width), "grey50")
+
+    # Fill rest of screen with dark bg
+    remaining = height - content_height - top_pad
+    for _ in range(max(0, remaining)):
+        p(" " * width)
 
 
 async def test_lamp_connection(ip: str) -> str:
@@ -247,6 +262,14 @@ exec caffeinate -is uv run python main.py up {wake_time} -p {profile} --no-auto-
     subprocess.run(['osascript', '-e', applescript])
 
 
+def reset_terminal():
+    """Reset terminal to default colors."""
+    sys.stdout.write("\033[0m")  # Reset all attributes
+    sys.stdout.write("\033[2J")  # Clear screen
+    sys.stdout.write("\033[H")   # Move cursor to top
+    sys.stdout.flush()
+
+
 async def interactive_setup():
     """Run the interactive setup TUI."""
     # Default values
@@ -264,61 +287,66 @@ async def interactive_setup():
     # Test lamp connection
     lamp_status = await test_lamp_connection(ip)
 
-    while True:
-        render_setup_screen(wake_hour, wake_min, duration, max_temp, selected_field, lamp_status)
+    try:
+        while True:
+            render_setup_screen(wake_hour, wake_min, duration, max_temp, selected_field, lamp_status)
 
-        key = get_key()
+            key = get_key()
 
-        if key == 'QUIT':
-            console.clear()
-            console.print("\n  Cancelled.\n", style="dim")
-            return
+            if key == 'QUIT':
+                reset_terminal()
+                console.print("\n  Cancelled.\n", style="dim")
+                return
 
-        elif key == 'ENTER':
-            # Turn off lamp and launch alarm
-            console.clear()
-            console.print("\n  Preparing alarm...\n", style="orange1")
+            elif key == 'ENTER':
+                # Turn off lamp and launch alarm
+                reset_terminal()
+                console.print("\n  Preparing alarm...\n", style="orange1")
 
-            await turn_off_lamp(ip)
+                await turn_off_lamp(ip)
 
-            wake_time = f"{wake_hour:02d}:{wake_min:02d}"
-            launch_alarm_in_terminal(wake_time, duration, max_temp, ip)
+                wake_time = f"{wake_hour:02d}:{wake_min:02d}"
+                launch_alarm_in_terminal(wake_time, duration, max_temp, ip)
 
-            console.print(f"  ☀ Alarm set for {wake_time}", style="bright_yellow")
-            console.print(f"  Running in new terminal window.\n", style="dim")
-            return
+                console.print(f"  ☀ Alarm set for {wake_time}", style="bright_yellow")
+                console.print(f"  Running in new terminal window.\n", style="dim")
+                return
 
-        elif key == 'UP' or key == 'TAB':
-            selected_field = (selected_field - 1) % 3
+            elif key == 'UP' or key == 'TAB':
+                selected_field = (selected_field - 1) % 3
 
-        elif key == 'DOWN':
-            selected_field = (selected_field + 1) % 3
+            elif key == 'DOWN':
+                selected_field = (selected_field + 1) % 3
 
-        elif key == 'LEFT':
-            if selected_field == 0:  # Time
-                wake_min -= 5
-                if wake_min < 0:
-                    wake_min = 55
-                    wake_hour = (wake_hour - 1) % 24
-            elif selected_field == 1:  # Duration
-                idx = durations.index(duration) if duration in durations else 1
-                duration = durations[(idx - 1) % len(durations)]
-            elif selected_field == 2:  # Temp
-                idx = temps.index(max_temp) if max_temp in temps else 2
-                max_temp = temps[(idx - 1) % len(temps)]
+            elif key == 'LEFT':
+                if selected_field == 0:  # Time
+                    wake_min -= 5
+                    if wake_min < 0:
+                        wake_min = 55
+                        wake_hour = (wake_hour - 1) % 24
+                elif selected_field == 1:  # Duration
+                    idx = durations.index(duration) if duration in durations else 1
+                    duration = durations[(idx - 1) % len(durations)]
+                elif selected_field == 2:  # Temp
+                    idx = temps.index(max_temp) if max_temp in temps else 2
+                    max_temp = temps[(idx - 1) % len(temps)]
 
-        elif key == 'RIGHT':
-            if selected_field == 0:  # Time
-                wake_min += 5
-                if wake_min >= 60:
-                    wake_min = 0
-                    wake_hour = (wake_hour + 1) % 24
-            elif selected_field == 1:  # Duration
-                idx = durations.index(duration) if duration in durations else 1
-                duration = durations[(idx + 1) % len(durations)]
-            elif selected_field == 2:  # Temp
-                idx = temps.index(max_temp) if max_temp in temps else 2
-                max_temp = temps[(idx + 1) % len(temps)]
+            elif key == 'RIGHT':
+                if selected_field == 0:  # Time
+                    wake_min += 5
+                    if wake_min >= 60:
+                        wake_min = 0
+                        wake_hour = (wake_hour + 1) % 24
+                elif selected_field == 1:  # Duration
+                    idx = durations.index(duration) if duration in durations else 1
+                    duration = durations[(idx + 1) % len(durations)]
+                elif selected_field == 2:  # Temp
+                    idx = temps.index(max_temp) if max_temp in temps else 2
+                    max_temp = temps[(idx + 1) % len(temps)]
+
+    except KeyboardInterrupt:
+        reset_terminal()
+        console.print("\n  Cancelled.\n", style="dim")
 
 def get_gradient_color(pos: int, total: int, stage: int) -> str:
     """Get color name based on position and stage."""
