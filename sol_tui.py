@@ -211,9 +211,9 @@ class AnimationScreen(Screen):
 
         # Messages
         msg1 = "Let there be light."
-        msg2 = "Good Morning, welcome to the game!"
+        msg2 = "Welcome to the game."
         now = datetime.now()
-        msg3 = f"\u2600 {now.strftime('%A, %B %d')} \u2022 {now.strftime('%H:%M')}"
+        msg3 = f"{now.strftime('%A, %B %d')}  {now.strftime('%H:%M')}"
 
         # Get terminal size
         width = self.app.size.width
@@ -228,9 +228,9 @@ class AnimationScreen(Screen):
         end_pos = sun_final_row
         total_frames = start_pos - end_pos
 
-        border_color = "bright_yellow"
+        border_color = "yellow"
         sun_color = "bright_yellow"
-        sky_bg = "grey27"
+        sky_bg = "grey19"
 
         revealed = [False, False, False]
 
@@ -248,15 +248,19 @@ class AnimationScreen(Screen):
             # Build the frame
             lines = []
 
-            # Top border
-            lines.append(("\u2588" * width, border_color))
+            # Top border (box drawing)
+            top_border = Text()
+            top_border.append("\u250c", style=border_color)
+            top_border.append("\u2500" * (width - 2), style=border_color)
+            top_border.append("\u2510", style=border_color)
+            lines.append(top_border)
 
             for row in range(1, height - 1):
                 is_sun_row = sun_row <= row < sun_row + sun_height
                 sun_idx = row - sun_row
 
                 line_text = Text()
-                line_text.append("\u2588", style=border_color)
+                line_text.append("\u2502", style=border_color)
 
                 if is_sun_row and 0 <= sun_idx < sun_height:
                     sun_line = sun_art[sun_idx]
@@ -286,11 +290,15 @@ class AnimationScreen(Screen):
                 else:
                     line_text.append(" " * (width - 2), style=f"on {sky_bg}")
 
-                line_text.append("\u2588", style=border_color)
+                line_text.append("\u2502", style=border_color)
                 lines.append(line_text)
 
-            # Bottom border
-            lines.append(Text("\u2588" * width, style=border_color))
+            # Bottom border (box drawing)
+            bottom_border = Text()
+            bottom_border.append("\u2514", style=border_color)
+            bottom_border.append("\u2500" * (width - 2), style=border_color)
+            bottom_border.append("\u2518", style=border_color)
+            lines.append(bottom_border)
 
             # Combine all lines
             full_text = Text()

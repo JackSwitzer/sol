@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Sol Sunrise Alarm - Terminal UI
+# Run with: ./sol-ink
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+cd "$SCRIPT_DIR" || exit 1
+
+# Check if node_modules exists, if not install
+if [ ! -d "node_modules" ]; then
+  echo "Installing dependencies..."
+  bun install
+fi
+
+# Run the app
+exec bun run src/index.tsx "$@"
