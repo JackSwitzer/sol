@@ -201,14 +201,18 @@ asyncio.run(off())
     exit();
   }, [settings, exit]);
 
-  const handleAnimationComplete = useCallback(() => {
-    if (pendingAlarmRef.current) {
+  const handleAnimationComplete = useCallback((cancelled?: boolean) => {
+    // Clear screen before transitioning back to prevent ghosting artifacts
+    stdout?.write('\x1B[2J\x1B[H');
+
+    if (pendingAlarmRef.current && !cancelled) {
       pendingAlarmRef.current = false;
       startAlarm();
     } else {
+      pendingAlarmRef.current = false;
       setAnimationMode('none');
     }
-  }, [startAlarm]);
+  }, [startAlarm, stdout]);
 
   useInput((input, key) => {
     if (animationMode !== 'none') {
@@ -221,12 +225,16 @@ asyncio.run(off())
     }
 
     if (input === 'a' || input === 'A') {
+      // Clear screen before animation to prevent ghosting
+      stdout?.write('\x1B[2J\x1B[H');
       setAnimationMode('preview');
       return;
     }
 
     if (key.return) {
       pendingAlarmRef.current = true;
+      // Clear screen before animation to prevent ghosting
+      stdout?.write('\x1B[2J\x1B[H');
       setAnimationMode('confirm');
       return;
     }
@@ -273,12 +281,12 @@ asyncio.run(off())
   const startTime = calculateStartTime(settings.wakeTime.hour, settings.wakeTime.minute, settings.duration);
   const wakeTimeStr = formatTime(settings.wakeTime.hour, settings.wakeTime.minute);
 
+  // Use height - 1 to prevent scroll flicker (known Ink issue)
   return (
     <Box
       flexDirection="column"
       width={dimensions.width}
-      height={dimensions.height}
-      backgroundColor="#000000"
+      height={dimensions.height - 1}
     >
       {/* Header with Sun */}
       <Box flexDirection="column" alignItems="center" marginTop={1}>

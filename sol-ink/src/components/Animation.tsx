@@ -1,44 +1,50 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Box, Text, useInput } from 'ink';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { Box, Text, useInput, useStdout } from 'ink';
 
 interface AnimationProps {
   width: number;
   height: number;
   autoReturn: boolean;
-  onComplete: () => void;
+  onComplete: (cancelled?: boolean) => void;
 }
 
 // Perfectly symmetric sun stages - each line same width for clean rendering
 const SUN_STAGES = [
-  // Stage 0: First light - minimal, ethereal
+  // Stage 0: First light - tiny dot, barely visible (5 chars)
   [
-    '    ·    ',
-    '  · ◯ ·  ',
-    '    ·    ',
+    '  ·  ',
   ],
-  // Stage 1: Emerging - small rays
+  // Stage 1: Emerging - small circle appearing (7 chars)
   [
-    '   \\│/   ',
-    '  ──◉──  ',
-    '   /│\\   ',
+    '   ·   ',
+    '  (○)  ',
+    '   ·   ',
   ],
-  // Stage 2: Rising - growing presence
+  // Stage 2: Rising - circle with small rays (11 chars)
   [
-    '  \\ │ /  ',
-    '   \\│/   ',
-    ' ───☀─── ',
-    '   /│\\   ',
-    '  / │ \\  ',
+    '    \\│/    ',
+    '   ─(●)─   ',
+    '    /│\\    ',
   ],
-  // Stage 3: Radiant - full glory
+  // Stage 3: Growing - sun with longer rays (17 chars)
   [
-    '    │    ',
-    ' \\  │  / ',
-    '  \\ │ /  ',
-    '────☀────',
-    '  / │ \\  ',
-    ' /  │  \\ ',
-    '    │    ',
+    '    \\   │   /    ',
+    '     \\  │  /     ',
+    '   ────(◉)────   ',
+    '     /  │  \\     ',
+    '    /   │   \\    ',
+  ],
+  // Stage 4: Full radiant sun - dramatic with long rays (25 chars)
+  [
+    '       \\    │    /       ',
+    '        \\   │   /        ',
+    '    \\    \\  │  /    /    ',
+    '     \\    \\ │ /    /     ',
+    '   ──────── ☀ ────────   ',
+    '     /    / │ \\    \\     ',
+    '    /    /  │  \\    \\    ',
+    '        /   │   \\        ',
+    '       /    │    \\       ',
   ],
 ];
 
@@ -114,13 +120,41 @@ const MSG1 = 'Let there be light.';
 const MSG2 = 'Welcome to the game.';
 
 export default function Animation({ width, height, autoReturn, onComplete }: AnimationProps) {
+  const { stdout } = useStdout();
   const [frame, setFrame] = useState(0);
   const [escapeCount, setEscapeCount] = useState(0);
   const escapeTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const autoReturnTimerRef = useRef<NodeJS.Timeout | null>(null);
   const completedRef = useRef(false);
 
   const TOTAL_FRAMES = 120;  // More frames for smoother motion
   const FRAME_DELAY = 50;    // Faster updates for fluidity
+
+  // Hide cursor and ensure clean screen on animation start
+  useEffect(() => {
+    // Ensure cursor is hidden during animation
+    stdout?.write('\x1B[?25l');
+  }, [stdout]);
+
+  // Force cursor to home position before each frame render
+  // This prevents ghosting artifacts by ensuring consistent render position
+  useEffect(() => {
+    stdout?.write('\x1B[H');
+  }, [frame, stdout]);
+
+  // Cleanup all timers on unmount to prevent memory leaks and state updates on unmounted component
+  useEffect(() => {
+    return () => {
+      if (escapeTimerRef.current) {
+        clearTimeout(escapeTimerRef.current);
+        escapeTimerRef.current = null;
+      }
+      if (autoReturnTimerRef.current) {
+        clearTimeout(autoReturnTimerRef.current);
+        autoReturnTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -133,8 +167,12 @@ export default function Animation({ width, height, autoReturn, onComplete }: Ani
   useEffect(() => {
     if (frame >= TOTAL_FRAMES && autoReturn && !completedRef.current) {
       completedRef.current = true;
-      const timeout = setTimeout(onComplete, 1200);
-      return () => clearTimeout(timeout);
+      autoReturnTimerRef.current = setTimeout(() => {
+        // Double-check we haven't been cleaned up
+        if (autoReturnTimerRef.current !== null) {
+          onComplete(false); // completed normally, not cancelled
+        }
+      }, 1200);
     }
   }, [frame, autoReturn, onComplete]);
 
@@ -143,25 +181,41 @@ export default function Animation({ width, height, autoReturn, onComplete }: Ani
 
     if (input === 'q' || input === 'Q') {
       completedRef.current = true;
-      onComplete();
+      // Clear auto-return timer if it was set
+      if (autoReturnTimerRef.current) {
+        clearTimeout(autoReturnTimerRef.current);
+        autoReturnTimerRef.current = null;
+      }
+      onComplete(true); // cancelled=true
       return;
     }
 
     if (key.escape) {
-      if (escapeTimerRef.current) clearTimeout(escapeTimerRef.current);
+      if (escapeTimerRef.current) {
+        clearTimeout(escapeTimerRef.current);
+        escapeTimerRef.current = null;
+      }
       if (escapeCount >= 1) {
         completedRef.current = true;
-        onComplete();
+        // Clear auto-return timer if it was set
+        if (autoReturnTimerRef.current) {
+          clearTimeout(autoReturnTimerRef.current);
+          autoReturnTimerRef.current = null;
+        }
+        onComplete(true); // cancelled=true
       } else {
         setEscapeCount(1);
-        escapeTimerRef.current = setTimeout(() => setEscapeCount(0), 1000);
+        escapeTimerRef.current = setTimeout(() => {
+          escapeTimerRef.current = null;
+          setEscapeCount(0);
+        }, 1000);
       }
       return;
     }
 
     if (!autoReturn && frame >= TOTAL_FRAMES) {
       completedRef.current = true;
-      onComplete();
+      onComplete(false); // completed normally
     }
   });
 
@@ -170,14 +224,16 @@ export default function Animation({ width, height, autoReturn, onComplete }: Ani
   // Cinematic eased rise - starts very slow, accelerates, then gentle finish
   const riseProgress = easeOutQuart(progress);
 
-  // Calculate sun position
+  // Calculate sun position - ensure it stays within the bordered area
   const horizonY = Math.floor(height * 0.72);
-  const sunTopEnd = Math.floor(height * 0.18);
+  const sunTopEnd = Math.floor(height * 0.20); // Don't let sun go too high
   const sunBottomStart = horizonY + 3;
-  const sunY = Math.floor(sunBottomStart - (sunBottomStart - sunTopEnd) * riseProgress);
+  // Clamp sunY to stay within content area (min 1, after top border)
+  const rawSunY = Math.floor(sunBottomStart - (sunBottomStart - sunTopEnd) * riseProgress);
+  const sunY = Math.max(1, rawSunY);
 
   // Sun stage transitions (with slight overlap for smoothness)
-  const sunStageIndex = Math.min(Math.floor(progress * 3.5), 3);
+  const sunStageIndex = Math.min(Math.floor(progress * 4.5), 4);
   const sunArt = SUN_STAGES[sunStageIndex];
   const sunHeight = sunArt.length;
 
@@ -199,12 +255,14 @@ export default function Animation({ width, height, autoReturn, onComplete }: Ani
 
   // Top border
   lines.push(
-    <Box key="top">
+    <Box key="top" width={width}>
       <Text color={colors.border}>╭{'─'.repeat(innerWidth)}╮</Text>
     </Box>
   );
 
-  for (let row = 1; row < height - 3; row++) {
+  // Content rows fill the space between top and bottom borders
+  // Using height - 2 accounts for top/bottom borders, -1 more for the height-1 container
+  for (let row = 1; row < height - 2; row++) {
     const isSunRow = row >= sunY && row < sunY + sunHeight;
     const sunRowIndex = row - sunY;
     const isMessage1Row = row === messageY - 1;
@@ -278,7 +336,7 @@ export default function Animation({ width, height, autoReturn, onComplete }: Ani
     }
 
     lines.push(
-      <Box key={`row-${row}`}>
+      <Box key={`row-${row}`} width={width}>
         <Text color={colors.border}>│</Text>
         {content}
         <Text color={colors.border}>│</Text>
@@ -288,26 +346,14 @@ export default function Animation({ width, height, autoReturn, onComplete }: Ani
 
   // Bottom border
   lines.push(
-    <Box key="bottom">
+    <Box key="bottom" width={width}>
       <Text color={colors.border}>╰{'─'.repeat(innerWidth)}╯</Text>
     </Box>
   );
 
-  // Hint text
-  const hint = autoReturn
-    ? (frame >= TOTAL_FRAMES ? '·' : '')
-    : (frame >= TOTAL_FRAMES ? 'Press any key' : '');
-
-  if (hint) {
-    lines.push(
-      <Box key="hint" justifyContent="center" marginTop={1}>
-        <Text color="#444">{hint}</Text>
-      </Box>
-    );
-  }
-
+  // Use height - 1 to prevent scroll flicker (known Ink issue)
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" width={width} height={height - 1}>
       {lines}
     </Box>
   );
