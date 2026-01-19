@@ -274,7 +274,12 @@ asyncio.run(off())
   const wakeTimeStr = formatTime(settings.wakeTime.hour, settings.wakeTime.minute);
 
   return (
-    <Box flexDirection="column" width={dimensions.width}>
+    <Box
+      flexDirection="column"
+      width={dimensions.width}
+      height={dimensions.height}
+      backgroundColor="#000000"
+    >
       {/* Header with Sun */}
       <Box flexDirection="column" alignItems="center" marginTop={1}>
         {SUN_HEADER.map((line, i) => (
