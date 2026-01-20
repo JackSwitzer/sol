@@ -1,131 +1,79 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Box, Text, useInput, useStdout } from 'ink';
+import {
+  Point, CharLevel, CHARS, RING_DEFS, ANIM, Colors, ThemeKey,
+  hexToRgb, getColors, getRingVisibility, getPulseIntensity,
+  getRingChar, getRingColor, getRayChar, buildSunForFrame,
+  textToPointsBold, timeToSegmentPoints, easeOutQuad, easeOutCubic,
+} from '../animation-core';
 
 interface AnimationProps {
   width: number;
   height: number;
   autoReturn: boolean;
   onComplete: (cancelled?: boolean) => void;
+  theme?: ThemeKey;
 }
 
 // =============================================================================
-// SUN ASCII ART - Pre-padded stages
+// TEXT MORPHING
 // =============================================================================
 
-const W0 = 3;
-const W1 = 7;
-const W2 = 11;
-const W3 = 17;
-const W4 = 25;
-
-const pad = (s: string, w: number): string => {
-  const left = Math.floor((w - s.length) / 2);
-  const right = w - s.length - left;
-  return ' '.repeat(left) + s + ' '.repeat(right);
-};
-
-const SUN_STAGES = [
-  [pad('.', W0)],
-  [pad('.', W1), pad('(o)', W1), pad('.', W1)],
-  [
-    pad('\\   /', W2),
-    pad('\\ | /', W2),
-    pad('--O--', W2),
-    pad('/ | \\', W2),
-    pad('/   \\', W2),
-  ],
-  [
-    pad('\\    |    /', W3),
-    pad('\\   |   /', W3),
-    pad('\\  |  /', W3),
-    pad('-----O-----', W3),
-    pad('/  |  \\', W3),
-    pad('/   |   \\', W3),
-    pad('/    |    \\', W3),
-  ],
-  [
-    pad('\\      |      /', W4),
-    pad('\\     |     /', W4),
-    pad('\\    |    /', W4),
-    pad('\\   |   /', W4),
-    pad('-----------@-----------', W4),
-    pad('/   |   \\', W4),
-    pad('/    |    \\', W4),
-    pad('/     |     \\', W4),
-    pad('/      |      \\', W4),
-  ],
-];
-
-// =============================================================================
-// COLOR SYSTEM
-// =============================================================================
-
-function lerp(a: number, b: number, t: number): number {
-  return a + (b - a) * t;
+interface MorphTarget {
+  point: Point;
+  char: string;
 }
 
-function hexToRgb(hex: string): [number, number, number] {
-  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-  return m
-    ? [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)]
-    : [0, 0, 0];
-}
-
-function rgbToHex(r: number, g: number, b: number): string {
-  const clamp = (n: number) => Math.max(0, Math.min(255, Math.round(n)));
-  return '#' + [r, g, b].map(c => clamp(c).toString(16).padStart(2, '0')).join('');
-}
-
-function lerpColor(c1: string, c2: string, t: number): string {
-  const [r1, g1, b1] = hexToRgb(c1);
-  const [r2, g2, b2] = hexToRgb(c2);
-  return rgbToHex(lerp(r1, r2, t), lerp(g1, g2, t), lerp(b1, b2, t));
-}
-
-const PALETTE = [
-  { t: 0.0, sky: '#030201', sun: '#3a0808', txt: '#2a1010' },
-  { t: 0.15, sky: '#050302', sun: '#6a1010', txt: '#4a1818' },
-  { t: 0.3, sky: '#0a0504', sun: '#aa3300', txt: '#883311' },
-  { t: 0.5, sky: '#120806', sun: '#dd5500', txt: '#cc5522' },
-  { t: 0.7, sky: '#1a0c08', sun: '#ff7700', txt: '#ff8844' },
-  { t: 0.85, sky: '#22100a', sun: '#ffaa33', txt: '#ffcc66' },
-  { t: 1.0, sky: '#2a180e', sun: '#ffdd66', txt: '#ffffff' },
-];
-
-function getColors(progress: number): { sky: string; sun: string; txt: string } {
-  let lo = PALETTE[0];
-  let hi = PALETTE[PALETTE.length - 1];
-
-  for (let i = 0; i < PALETTE.length - 1; i++) {
-    if (progress >= PALETTE[i].t && progress <= PALETTE[i + 1].t) {
-      lo = PALETTE[i];
-      hi = PALETTE[i + 1];
-      break;
+function getSunPoints(frame: number, centerRow: number, centerCol: number): { point: Point; level: CharLevel }[] {
+  const points: { point: Point; level: CharLevel }[] = [];
+  for (let ringIdx = 0; ringIdx <= ANIM.MAX_RING; ringIdx++) {
+    const visibility = getRingVisibility(ringIdx, Math.min(frame, ANIM.RISE_FRAMES));
+    if (visibility === 0) continue;
+    const baseLevel = RING_DEFS[ringIdx].baseLevel;
+    const pulseIntensity = getPulseIntensity(ringIdx, frame);
+    const pulseBoost = Math.round(pulseIntensity * 2);
+    const fadeReduction = Math.round((1 - visibility) * 2);
+    const level = Math.max(1, Math.min(4, baseLevel + pulseBoost - fadeReduction)) as CharLevel;
+    for (const [dr, dc] of RING_DEFS[ringIdx].points) {
+      points.push({ point: [centerRow + dr, centerCol + dc], level });
     }
   }
-
-  const span = hi.t - lo.t;
-  const local = span > 0 ? (progress - lo.t) / span : 0;
-
-  return {
-    sky: lerpColor(lo.sky, hi.sky, local),
-    sun: lerpColor(lo.sun, hi.sun, local),
-    txt: lerpColor(lo.txt, hi.txt, local),
-  };
+  return points;
 }
 
-// =============================================================================
-// EASING & CONSTANTS
-// =============================================================================
+function getMorphedPoints(
+  frame: number,
+  sunCenter: [number, number],
+  targets: MorphTarget[]
+): { point: Point; char: string; level: CharLevel }[] {
+  const sunPoints = getSunPoints(ANIM.RISE_FRAMES, sunCenter[0], sunCenter[1]);
+  const eased = easeOutCubic(Math.min(1, (frame - ANIM.MORPH_START) / ANIM.MORPH_FRAMES));
+  const result: { point: Point; char: string; level: CharLevel }[] = [];
 
-function easeOutQuart(t: number): number {
-  return 1 - Math.pow(1 - t, 4);
+  for (let i = 0; i < targets.length; i++) {
+    const target = targets[i];
+    let srcRow: number, srcCol: number, level: CharLevel;
+
+    if (i < sunPoints.length) {
+      srcRow = sunPoints[i].point[0];
+      srcCol = sunPoints[i].point[1];
+      level = sunPoints[i].level;
+    } else {
+      const angle = (i * 137.508) * (Math.PI / 180);
+      const dist = ((i * 7) % 7) + 1;
+      srcRow = sunCenter[0] + Math.round(Math.sin(angle) * dist);
+      srcCol = sunCenter[1] + Math.round(Math.cos(angle) * dist);
+      level = 3 as CharLevel;
+    }
+
+    const newRow = Math.round(srcRow + (target.point[0] - srcRow) * eased);
+    const newCol = Math.round(srcCol + (target.point[1] - srcCol) * eased);
+    const char = eased > 0.8 ? target.char : '●';
+
+    result.push({ point: [newRow, newCol], char, level });
+  }
+  return result;
 }
-
-const MSG1 = 'Let there be light.';
-const MSG2 = 'Welcome to the game.';
-const TOTAL_FRAMES = 120;
-const FRAME_DELAY = 50;
 
 // =============================================================================
 // HELPERS
@@ -134,9 +82,7 @@ const FRAME_DELAY = 50;
 function fillRow(text: string, width: number): string {
   if (text.length >= width) return text.slice(0, width);
   const pad = width - text.length;
-  const left = Math.floor(pad / 2);
-  const right = pad - left;
-  return ' '.repeat(left) + text + ' '.repeat(right);
+  return ' '.repeat(Math.floor(pad / 2)) + text + ' '.repeat(pad - Math.floor(pad / 2));
 }
 
 // =============================================================================
@@ -148,6 +94,7 @@ export default function Animation({
   height,
   autoReturn,
   onComplete,
+  theme = 'blood_red',
 }: AnimationProps): React.ReactElement {
   const { stdout } = useStdout();
   const [frame, setFrame] = useState(0);
@@ -156,12 +103,8 @@ export default function Animation({
   const autoReturnTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const completedRef = useRef(false);
 
-  // Hide cursor
-  useEffect(() => {
-    stdout?.write('\x1B[?25l');
-  }, [stdout]);
+  useEffect(() => { stdout?.write('\x1B[?25l'); }, [stdout]);
 
-  // Cleanup timers
   useEffect(() => {
     return () => {
       if (escapeTimerRef.current) clearTimeout(escapeTimerRef.current);
@@ -169,45 +112,39 @@ export default function Animation({
     };
   }, []);
 
-  // Frame ticker
   useEffect(() => {
     const id = setInterval(() => {
-      setFrame(f => (f < TOTAL_FRAMES ? f + 1 : f));
-    }, FRAME_DELAY);
+      setFrame(f => (f < ANIM.TOTAL_FRAMES ? f + 1 : f));
+    }, ANIM.FRAME_DELAY_MS);
     return () => clearInterval(id);
   }, []);
 
-  // Auto-return
   useEffect(() => {
-    if (frame >= TOTAL_FRAMES && autoReturn && !completedRef.current) {
+    if (frame >= ANIM.TOTAL_FRAMES && autoReturn && !completedRef.current) {
+      // Preview mode: auto-return after delay
       completedRef.current = true;
       autoReturnTimerRef.current = setTimeout(() => onComplete(false), 1200);
     }
+    // Alarm mode (autoReturn=false): stay on screen until user interaction
   }, [frame, autoReturn, onComplete]);
 
-  // Fill the final row with sky color (handles Ink's trailing newline)
+  // Background color effect - always black
   useEffect(() => {
     if (!stdout) return;
-    const progress = Math.min(frame / TOTAL_FRAMES, 1);
-    const colors = getColors(progress);
-    const [r, g, b] = hexToRgb(colors.sky);
-    stdout.write(`\x1B[${height};1H`);
-    stdout.write(`\x1B[48;2;${r};${g};${b}m`);
-    stdout.write(' '.repeat(width));
-    stdout.write('\x1B[H');
+    // Constant black background
+    stdout.write(`\x1B[${height};1H\x1B[48;2;0;0;0m${' '.repeat(width)}\x1B[H`);
   }, [frame, stdout, height, width]);
 
-  // Input handling
   useInput((input, key) => {
     if (completedRef.current) return;
 
+    // Cancel animation with Q or double-escape
     if (input === 'q' || input === 'Q') {
       completedRef.current = true;
       if (autoReturnTimerRef.current) clearTimeout(autoReturnTimerRef.current);
       onComplete(true);
       return;
     }
-
     if (key.escape) {
       if (escapeTimerRef.current) clearTimeout(escapeTimerRef.current);
       if (escapeCount >= 1) {
@@ -221,103 +158,166 @@ export default function Animation({
       return;
     }
 
-    if (!autoReturn && frame >= TOTAL_FRAMES) {
+    // Alarm mode: any key dismisses after animation completes
+    if (!autoReturn && frame >= ANIM.TOTAL_FRAMES) {
       completedRef.current = true;
       onComplete(false);
     }
   });
 
-  // ==========================================================================
   // Animation state
-  // ==========================================================================
-  const progress = Math.min(frame / TOTAL_FRAMES, 1);
-  const easedProgress = easeOutQuart(progress);
-  const colors = getColors(progress);
-
-  // Sun stage (0-4)
-  const stageIdx = Math.min(Math.floor(progress * 5), 4);
-  const sunArt = SUN_STAGES[stageIdx];
-  const sunH = sunArt.length;
-
-  // Render height-1 rows (Ink adds trailing newline)
+  const progress = Math.min(frame / ANIM.TOTAL_FRAMES, 1);
+  const riseProgress = Math.min(frame / ANIM.RISE_FRAMES, 1);
+  const easedProgress = easeOutQuad(riseProgress);
   const renderH = height - 1;
 
-  // Vertical layout
-  const horizonRow = Math.floor(renderH * 0.72);
-  const sunTopLimit = Math.floor(renderH * 0.18);
-  const sunStartY = horizonRow + 2;
+  // Color transition timing:
+  // - Frames 0-100: sunrise colors (blood_red)
+  // - Frames 100-120: transition to neon green (BEFORE morph starts)
+  // - Frames 120+: neon green during morph
+  const COLOR_TRANSITION_START = 100;
+  const COLOR_TRANSITION_END = ANIM.RISE_FRAMES; // 120
 
-  // Sun rises from below horizon
-  const sunY = Math.max(
-    sunTopLimit,
-    Math.floor(sunStartY - (sunStartY - sunTopLimit) * easedProgress)
-  );
+  // Calculate color transition progress (0 during sunrise, 0-1 during transition, 1 after)
+  let colorTransition = 0;
+  if (frame >= COLOR_TRANSITION_START) {
+    colorTransition = Math.min(1, (frame - COLOR_TRANSITION_START) / (COLOR_TRANSITION_END - COLOR_TRANSITION_START));
+  }
 
-  // Message positions
-  const msgRow1 = Math.floor(renderH * 0.36);
-  const msgRow2 = msgRow1 + 3;
-  const dateRow = msgRow1 + 6;
+  // Get sunrise colors based on rise progress
+  const sunriseProgress = Math.min(frame / COLOR_TRANSITION_START, 1);
+  const sunriseColors = getColors(sunriseProgress, 'blood_red');
 
-  // Show messages as sun rises past them
-  const showMsg1 = sunY < msgRow1;
-  const showMsg2 = sunY < msgRow2;
+  // Neon green palette (vibrant, high saturation)
+  const neonGreen = {
+    sky: '#000000',      // Black background
+    core: '#00ff88',     // Bright neon green
+    inner: '#00dd66',    // Slightly darker neon
+    outer: '#00bb44',    // Outer glow
+    glow: '#44ffaa',     // Bright glow
+  };
 
-  // Date/time
-  const now = new Date();
-  const dateStr = `${now.toLocaleDateString('en-US', {
-    weekday: 'long',
-    month: 'short',
-    day: 'numeric',
-  })}  |  ${now.toLocaleTimeString('en-US', {
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  })}`;
+  // Blend helper
+  const blendColors = (c1: string, c2: string, t: number): string => {
+    const [r1, g1, b1] = hexToRgb(c1);
+    const [r2, g2, b2] = hexToRgb(c2);
+    const r = Math.round(r1 + (r2 - r1) * t);
+    const g = Math.round(g1 + (g2 - g1) * t);
+    const b = Math.round(b1 + (b2 - b1) * t);
+    return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+  };
 
-  // ==========================================================================
+  // Always use black background, blend sun colors
+  const colors: Colors = {
+    sky: '#000000',  // Constant black background
+    core: blendColors(sunriseColors.core, neonGreen.core, colorTransition),
+    inner: blendColors(sunriseColors.inner, neonGreen.inner, colorTransition),
+    outer: blendColors(sunriseColors.outer, neonGreen.outer, colorTransition),
+    glow: blendColors(sunriseColors.glow, neonGreen.glow, colorTransition),
+  };
+
+  const sunArt = buildSunForFrame(Math.min(frame, ANIM.RISE_FRAMES));
+  const sunH = sunArt.length;
+  const sunW = sunArt[0]?.length || 1;
+
+  const sunEndY = Math.floor((renderH - sunH) / 2);
+  const sunY = Math.max(sunEndY, Math.floor(renderH - (renderH - sunEndY) * easedProgress));
+  const sunCenterX = Math.floor(width / 2);
+  const sunCenterY = sunY + Math.floor(sunH / 2);
+
   // Build frame buffer
-  // ==========================================================================
-  const rows: React.ReactElement[] = [];
+  const grid: { char: string; color: string }[][] = [];
+  for (let r = 0; r < renderH; r++) {
+    grid[r] = [];
+    for (let c = 0; c < width; c++) {
+      grid[r][c] = { char: ' ', color: colors.sky };
+    }
+  }
 
-  for (let row = 0; row < renderH; row++) {
-    const inSun = row >= sunY && row < sunY + sunH;
-    const sunLineIdx = row - sunY;
+  if (frame >= ANIM.MORPH_START) {
+    // Morph phase - "WELCOME TO THE GAME JACK" + time
+    const now = new Date();
+    const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 
-    let text: string;
-    let fg: string;
-    let bold = false;
-    let dim = false;
+    // Two lines of text
+    const line1Points = textToPointsBold('WELCOME TO THE GAME JACK');
+    const line2Points = timeToSegmentPoints(timeStr);
 
-    if (inSun && sunLineIdx >= 0 && sunLineIdx < sunArt.length) {
-      text = fillRow(sunArt[sunLineIdx], width);
-      fg = colors.sun;
-      bold = true;
-    } else if (row === msgRow1 && showMsg1) {
-      text = fillRow(MSG1, width);
-      fg = colors.txt;
-      bold = true;
-    } else if (row === msgRow2 && showMsg2) {
-      text = fillRow(MSG2, width);
-      fg = colors.txt;
-    } else if (row === dateRow && showMsg2) {
-      text = fillRow(dateStr, width);
-      fg = colors.txt;
-      dim = true;
-    } else {
-      text = ' '.repeat(width);
-      fg = colors.sky;
+    const line1Width = line1Points.reduce((max, p) => Math.max(max, p[1]), 0) + 1;
+    const line2Width = line2Points.reduce((max, p) => Math.max(max, p.point[1]), 0) + 1;
+
+    const textHeight = 5, segmentHeight = 5;
+    const totalHeight = textHeight + 3 + segmentHeight;  // text + gap + time
+    const textStartY = Math.floor((renderH - totalHeight) / 2);
+    const line1StartX = Math.floor((width - line1Width) / 2);
+    const line2StartX = Math.floor((width - line2Width) / 2);
+
+    const allTargets: MorphTarget[] = [];
+    // Line 1: WELCOME TO THE GAME JACK
+    for (const [r, c] of line1Points) {
+      allTargets.push({ point: [textStartY + r, line1StartX + c], char: '●' });
+    }
+    // Line 2: Time (7-segment)
+    for (const { point: [r, c], char } of line2Points) {
+      allTargets.push({ point: [textStartY + textHeight + 3 + r, line2StartX + c], char });
     }
 
+    const morphedPoints = getMorphedPoints(frame, [sunCenterY, sunCenterX], allTargets);
+    const morphProgress = (frame - ANIM.MORPH_START) / ANIM.MORPH_FRAMES;
+    for (const { point: [r, c], char } of morphedPoints) {
+      if (r >= 0 && r < renderH && c >= 0 && c < width) {
+        grid[r][c] = { char, color: morphProgress > 0.7 ? colors.core : colors.glow };
+      }
+    }
+  } else {
+    // Rise phase
+    for (let ringIdx = 0; ringIdx <= ANIM.MAX_RING; ringIdx++) {
+      const ringDef = RING_DEFS[ringIdx];
+      if (!ringDef) continue;
+      const visibility = getRingVisibility(ringIdx, frame);
+      if (visibility === 0) continue;
+      const ringColor = getRingColor(ringIdx, frame, colors);
+
+      for (const [dr, dc] of ringDef.points) {
+        const r = sunCenterY + dr, c = sunCenterX + dc;
+        if (r >= 0 && r < renderH && c >= 0 && c < width) {
+          let char: string;
+          if (ringDef.isRay) {
+            // Ray rings use line characters
+            char = visibility > 0.5 ? getRayChar(dr, dc) : '·';
+          } else {
+            char = getRingChar(ringIdx, frame);
+            if (char === ' ') continue;
+          }
+          grid[r][c] = { char, color: ringColor };
+        }
+      }
+    }
+  }
+
+  // Convert grid to React elements with color grouping
+  const rows: React.ReactElement[] = [];
+  for (let r = 0; r < renderH; r++) {
+    const segments: { text: string; color: string }[] = [];
+    let currentText = '', currentColor = colors.sky;
+    for (let c = 0; c < width; c++) {
+      const cell = grid[r][c];
+      if (cell.color === currentColor) {
+        currentText += cell.char;
+      } else {
+        if (currentText) segments.push({ text: currentText, color: currentColor });
+        currentText = cell.char;
+        currentColor = cell.color;
+      }
+    }
+    if (currentText) segments.push({ text: currentText, color: currentColor });
+
     rows.push(
-      <Text
-        key={row}
-        color={fg}
-        backgroundColor={colors.sky}
-        bold={bold}
-        dimColor={dim}
-      >
-        {text}
-      </Text>
+      <Box key={r}>
+        {segments.map((seg, i) => (
+          <Text key={i} color={seg.color} backgroundColor={colors.sky}>{seg.text}</Text>
+        ))}
+      </Box>
     );
   }
 

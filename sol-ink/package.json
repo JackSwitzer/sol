@@ -8,7 +8,9 @@
     "start": "bun run src/index.tsx",
     "dev": "bun --watch run src/index.tsx",
     "build": "bun build src/index.tsx --outdir dist --target node",
-    "stages": "bun run tools/stage-review.tsx"
+    "stages": "bun run tools/stage-review.tsx",
+    "render": "bun run utils/render-frames.ts",
+    "render:all": "bun run utils/render-frames.ts --all --save"
   },
   "dependencies": {
     "ink": "^5.0.1",

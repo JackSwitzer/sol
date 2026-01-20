@@ -3,9 +3,10 @@ import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import SettingsPanel from './components/SettingsPanel.js';
 import Animation from './components/Animation.js';
 import { useLampConnection } from './hooks/useLampConnection.js';
-import { execSync } from 'child_process';
+import { execSync, spawn } from 'child_process';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
+// Theme is now hardcoded (sunrise → green), so no theme imports needed
 
 // Profiles with presets
 const PROFILES = {
@@ -23,7 +24,7 @@ const DURATION_MIN = 10;
 const DURATION_MAX = 60;
 
 // Temperature options (Kelvin)
-const TEMP_OPTIONS = [4000, 4500, 5000, 5500, 6000, 6500];
+const TEMP_OPTIONS = [2500, 3000, 4000, 5000, 6000, 6500, 7500, 9000];
 
 interface Settings {
   profile: ProfileKey;
@@ -87,6 +88,7 @@ export default function App() {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [selectedField, setSelectedField] = useState(0);
   const [animationMode, setAnimationMode] = useState<'none' | 'preview' | 'confirm'>('none');
+  const [alarmActive, setAlarmActive] = useState<{ wakeTime: string } | null>(null);
   const { connected, checking, checkConnection } = useLampConnection();
   const pendingAlarmRef = useRef(false);
 
@@ -218,7 +220,7 @@ export default function App() {
     const __dirname = dirname(fileURLToPath(import.meta.url));
     const lampDir = resolve(__dirname, '../..');
 
-    // Turn off lamp first, then exit and run alarm
+    // Turn off lamp first
     try {
       execSync(`cd "${lampDir}" && uv run python -c "
 import asyncio
@@ -232,20 +234,26 @@ asyncio.run(off())
 "`, { stdio: 'ignore' });
     } catch {}
 
-    // Store command for after exit
-    process.env.SOL_ALARM_CMD = `cd "${lampDir}" && caffeinate -d uv run python main.py up ${wakeTimeStr} -p ${profile}`;
-    exit();
-  }, [settings, exit]);
+    // Spawn alarm command in background (detached)
+    const cmd = `cd "${lampDir}" && caffeinate -d uv run python main.py up ${wakeTimeStr} -p ${profile}`;
+    const child = spawn('sh', ['-c', cmd], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.unref();
+
+    // Set alarm active state and return to menu
+    setAlarmActive({ wakeTime: wakeTimeStr });
+  }, [settings]);
 
   const handleAnimationComplete = useCallback((cancelled?: boolean) => {
     if (pendingAlarmRef.current && !cancelled) {
       pendingAlarmRef.current = false;
       startAlarm();
-    } else {
-      pendingAlarmRef.current = false;
-      // fillBlack is called by useEffect when animationMode changes to 'none'
-      setAnimationMode('none');
     }
+    pendingAlarmRef.current = false;
+    // Always return to menu - fillBlack is called by useEffect when animationMode changes to 'none'
+    setAnimationMode('none');
   }, [startAlarm]);
 
   useInput((input, key) => {
@@ -282,6 +290,16 @@ asyncio.run(off())
       return;
     }
 
+    // Cancel active alarm
+    if ((input === 'c' || input === 'C') && alarmActive) {
+      // Kill the background alarm process
+      try {
+        execSync('pkill -f "main.py up"', { stdio: 'ignore' });
+      } catch {}
+      setAlarmActive(null);
+      return;
+    }
+
     if (key.return) {
       pendingAlarmRef.current = true;
       fillBlack(stdout);
@@ -289,9 +307,9 @@ asyncio.run(off())
       return;
     }
 
-    // Navigation (4 fields now)
+    // Navigation (5 fields now)
     if (key.upArrow) {
-      setSelectedField(prev => (prev - 1 + 4) % 4);
+      setSelectedField(prev => (prev - 1 + 5) % 4);
     } else if (key.downArrow) {
       setSelectedField(prev => (prev + 1) % 4);
     }
@@ -387,6 +405,16 @@ asyncio.run(off())
               <Text color="#FF4444">Not Found</Text>
             )}
           </Box>
+
+          {/* Alarm status */}
+          {alarmActive && (
+            <Box marginTop={1} justifyContent="center">
+              <Text color="#00FF00" bold>⏰ Alarm Active</Text>
+              <Text color="#555"> - Wake at </Text>
+              <Text color="#FFD700" bold>{alarmActive.wakeTime}</Text>
+              <Text color="#555"> (C to cancel)</Text>
+            </Box>
+          )}
         </Box>
       </Box>
 
