@@ -13,20 +13,20 @@ interface CountdownAnimationProps {
   onWakeTime: () => void;
 }
 
-// Moon color palette (cool blue/silver)
+// Deep dark blue palette
 const MOON_COLORS = {
   sky: '#000000',
-  core: '#c0c8d0',
-  glow: '#8090a0',
-  text: '#a0b0c0',
+  core: '#1a3a5c',
+  glow: '#0d2035',
+  text: '#2a4a6c',
 };
 
-// Neon blue for countdown text
+// Slightly brighter blue for countdown text
 const COUNTDOWN_COLORS = {
   sky: '#000000',
-  core: '#00aaff',
-  glow: '#0066aa',
-  text: '#00ddff',
+  core: '#2a5a8c',
+  glow: '#1a3a5c',
+  text: '#3a6a9c',
 };
 
 interface MorphTarget {
@@ -141,8 +141,8 @@ export default function CountdownAnimation({
     }
   }
 
-  // Get moon points (radius 6 for a nice sized moon)
-  const moonRadius = 6;
+  // Get crescent moon points (radius 8 for good visibility)
+  const moonRadius = 8;
   const moonPoints = getMoonPoints(moonRadius);
 
   // Build text targets

@@ -259,13 +259,19 @@ export const BOLD_FONT: Record<string, string[]> = {
   ' ': [' ', ' ', ' ', ' ', ' '],
 };
 
-// Moon shape - solid filled circle of dots (for countdown animation)
+// Crescent moon shape (for countdown animation)
 export function getMoonPoints(radius: number): Point[] {
   const points: Point[] = [];
+  const innerRadius = radius * 0.75;
+  const offsetC = radius * 0.5; // Offset the inner circle to the right
+
   for (let r = -radius; r <= radius; r++) {
     for (let c = -radius; c <= radius; c++) {
-      // Filled circle using distance formula
-      if (r * r + c * c <= radius * radius) {
+      const distOuter = r * r + c * c;
+      const distInner = r * r + (c - offsetC) * (c - offsetC);
+
+      // Point is in outer circle but not in offset inner circle
+      if (distOuter <= radius * radius && distInner > innerRadius * innerRadius) {
         points.push([r, c]);
       }
     }
