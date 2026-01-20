@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { render, Box, Text, useInput, useApp } from 'ink';
 import TextInput from 'ink-text-input';
 import { writeFileSync, existsSync, readFileSync } from 'fs';
@@ -10,63 +10,79 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const COMMENTS_FILE = resolve(__dirname, 'stage-comments.json');
 
 // =============================================================================
-// SUN ASCII ART - Same as Animation.tsx
+// SUN ASCII ART - Continuous growth with pulse-synced birth (same as Animation.tsx)
+// Characters: · (dim), • (medium), ○ (bright), ● (core/pulse peak)
 // =============================================================================
 
-const W0 = 3;
-const W1 = 7;
-const W2 = 11;
-const W3 = 17;
-const W4 = 25;
+type Point = [number, number];
+const CHARS = [' ', '·', '•', '○', '●'] as const;
+type CharLevel = 0 | 1 | 2 | 3 | 4;
 
-const pad = (s: string, w: number): string => {
-  const left = Math.floor((w - s.length) / 2);
-  const right = w - s.length - left;
-  return ' '.repeat(left) + s + ' '.repeat(right);
-};
+const RING_CARDINAL = (d: number): Point[] => [[0, -d], [0, d], [-d, 0], [d, 0]];
+const RING_DIAGONAL = (d: number): Point[] => [[-d, -d], [-d, d], [d, -d], [d, d]];
 
-const SUN_STAGES = [
-  { name: 'Stage 0: First Light', progress: '0-20%', art: [pad('.', W0)] },
-  { name: 'Stage 1: Emerging', progress: '20-40%', art: [pad('.', W1), pad('(o)', W1), pad('.', W1)] },
-  {
-    name: 'Stage 2: Rising',
-    progress: '40-60%',
-    art: [
-      pad('\\   /', W2),
-      pad('\\ | /', W2),
-      pad('--O--', W2),
-      pad('/ | \\', W2),
-      pad('/   \\', W2),
-    ],
-  },
-  {
-    name: 'Stage 3: Growing',
-    progress: '60-80%',
-    art: [
-      pad('\\    |    /', W3),
-      pad('\\   |   /', W3),
-      pad('\\  |  /', W3),
-      pad('-----O-----', W3),
-      pad('/  |  \\', W3),
-      pad('/   |   \\', W3),
-      pad('/    |    \\', W3),
-    ],
-  },
-  {
-    name: 'Stage 4: Full Sun',
-    progress: '80-100%',
-    art: [
-      pad('\\      |      /', W4),
-      pad('\\     |     /', W4),
-      pad('\\    |    /', W4),
-      pad('\\   |   /', W4),
-      pad('-----------@-----------', W4),
-      pad('/   |   \\', W4),
-      pad('/    |    \\', W4),
-      pad('/     |     \\', W4),
-      pad('/      |      \\', W4),
-    ],
-  },
+const RING_DEFS = [
+  { distance: 0, points: [[0, 0]] as Point[], baseLevel: 4 as CharLevel },
+  { distance: 1, points: [...RING_CARDINAL(1), ...RING_DIAGONAL(1)], baseLevel: 3 as CharLevel },
+  { distance: 2, points: [...RING_CARDINAL(2), ...RING_DIAGONAL(2)], baseLevel: 2 as CharLevel },
+  { distance: 3, points: [...RING_CARDINAL(3), ...RING_DIAGONAL(3)], baseLevel: 2 as CharLevel },
+  { distance: 4, points: [...RING_CARDINAL(4), ...RING_DIAGONAL(4)], baseLevel: 1 as CharLevel },
+  { distance: 5, points: [...RING_CARDINAL(5), ...RING_DIAGONAL(5)], baseLevel: 1 as CharLevel },
+];
+
+const PULSE_PERIOD = 30;
+const PULSE_SPEED = 6;
+const MAX_RING = 5;
+
+function getPulseIntensity(ringIndex: number, frame: number): number {
+  const pulsePositions: number[] = [];
+  for (let pulseStart = 0; pulseStart <= frame; pulseStart += PULSE_PERIOD) {
+    const pulseAge = frame - pulseStart;
+    const pulseRing = pulseAge / PULSE_SPEED;
+    if (pulseRing <= MAX_RING + 1) pulsePositions.push(pulseRing);
+  }
+  let maxIntensity = 0;
+  for (const pulsePos of pulsePositions) {
+    const distance = Math.abs(ringIndex - pulsePos);
+    if (distance < 1.5) maxIntensity = Math.max(maxIntensity, 1 - distance / 1.5);
+  }
+  return maxIntensity;
+}
+
+function getRingChar(ringIndex: number, frame: number, maxRing: number): string {
+  if (ringIndex > maxRing) return ' ';
+  const baseLevel = RING_DEFS[ringIndex].baseLevel;
+  const pulseBoost = Math.round(getPulseIntensity(ringIndex, frame) * 2);
+  const finalLevel = Math.max(1, Math.min(4, baseLevel + pulseBoost)) as CharLevel;
+  return CHARS[finalLevel];
+}
+
+// Stage frames for preview (show at different points in animation)
+const STAGE_FRAMES = [6, 18, 36, 60, 105];
+
+function buildSunForStage(stage: number, frame: number): string[] {
+  const maxRing = stage;
+  const size = maxRing === 0 ? 1 : maxRing * 2 + 1;
+  const center = Math.floor(size / 2);
+  const grid: string[][] = [];
+  for (let r = 0; r < size; r++) grid[r] = Array(size).fill(' ');
+  for (let ringIdx = 0; ringIdx <= maxRing; ringIdx++) {
+    const char = getRingChar(ringIdx, frame, maxRing);
+    if (char === ' ') continue;
+    for (const [dr, dc] of RING_DEFS[ringIdx].points) {
+      const r = center + dr, c = center + dc;
+      if (r >= 0 && r < size && c >= 0 && c < size) grid[r][c] = char;
+    }
+  }
+  return grid.map(row => row.join(''));
+}
+
+const STAGE_NAMES = [
+  { name: 'Stage 0: Seed', progress: '0-20%' },
+  { name: 'Stage 1: Core', progress: '20-40%' },
+  { name: 'Stage 2: First Ring', progress: '40-60%' },
+  { name: 'Stage 3: Second Ring', progress: '60-80%' },
+  { name: 'Stage 4: Full Sun', progress: '80-100%' },
 ];
 
 // =============================================================================
@@ -154,9 +170,19 @@ function StageReview() {
   const [isCommenting, setIsCommenting] = useState(false);
   const [commentText, setCommentText] = useState('');
   const [comments, setComments] = useState<Comments>(loadComments);
+  const [frame, setFrame] = useState(0);
+
+  // Animate with continuous pulse
+  useEffect(() => {
+    const id = setInterval(() => {
+      setFrame(f => (f + 1) % 120);
+    }, 50);
+    return () => clearInterval(id);
+  }, []);
 
   const stageProgress = [0.1, 0.3, 0.5, 0.7, 0.9];
-  const stage = SUN_STAGES[stageIdx];
+  const stageInfo = STAGE_NAMES[stageIdx];
+  const sunArt = buildSunForStage(stageIdx, frame);
   const progress = stageProgress[stageIdx];
   const colors = getColors(progress);
   const stageComments = comments[stageIdx] || [];
@@ -184,7 +210,7 @@ function StageReview() {
     if (key.leftArrow || input === 'h') {
       setStageIdx(prev => Math.max(0, prev - 1));
     } else if (key.rightArrow || input === 'l') {
-      setStageIdx(prev => Math.min(SUN_STAGES.length - 1, prev + 1));
+      setStageIdx(prev => Math.min(STAGE_NAMES.length - 1, prev + 1));
     }
 
     // Number keys to jump to stage
@@ -215,7 +241,7 @@ function StageReview() {
     setIsCommenting(false);
     setCommentText('');
     // Auto-advance to next stage
-    if (stageIdx < SUN_STAGES.length - 1) {
+    if (stageIdx < STAGE_NAMES.length - 1) {
       setStageIdx(prev => prev + 1);
     }
   };
@@ -230,7 +256,7 @@ function StageReview() {
 
       {/* Stage selector */}
       <Box marginBottom={1}>
-        {SUN_STAGES.map((s, i) => {
+        {STAGE_NAMES.map((s, i) => {
           const hasComments = (comments[i] || []).length > 0;
           return (
             <Box key={i} marginRight={1}>
@@ -248,13 +274,13 @@ function StageReview() {
 
       {/* Stage info */}
       <Box flexDirection="column" marginBottom={1}>
-        <Text bold color="#FFA500">{stage.name}</Text>
-        <Text color="#666">Progress: {stage.progress}</Text>
+        <Text bold color="#FFA500">{stageInfo.name}</Text>
+        <Text color="#666">Progress: {stageInfo.progress}</Text>
       </Box>
 
       {/* Sun art preview with background */}
       <Box flexDirection="column" backgroundColor={colors.sky} paddingX={4} paddingY={1}>
-        {stage.art.map((line, i) => (
+        {sunArt.map((line, i) => (
           <Text key={i} color={colors.sun} bold backgroundColor={colors.sky}>
             {line}
           </Text>
