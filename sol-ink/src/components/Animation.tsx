@@ -99,6 +99,10 @@ export default function Animation({
   const { stdout } = useStdout();
   const [frame, setFrame] = useState(0);
   const [escapeCount, setEscapeCount] = useState(0);
+  const [currentTime, setCurrentTime] = useState(() => {
+    const now = new Date();
+    return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  });
   const escapeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoReturnTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const completedRef = useRef(false);
@@ -118,6 +122,21 @@ export default function Animation({
     }, ANIM.FRAME_DELAY_MS);
     return () => clearInterval(id);
   }, []);
+
+  // Live clock update after animation completes
+  useEffect(() => {
+    if (frame < ANIM.TOTAL_FRAMES) return;
+
+    const updateTime = () => {
+      const now = new Date();
+      setCurrentTime(`${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`);
+    };
+
+    // Update immediately and then every second
+    updateTime();
+    const id = setInterval(updateTime, 1000);
+    return () => clearInterval(id);
+  }, [frame >= ANIM.TOTAL_FRAMES]);
 
   useEffect(() => {
     if (frame >= ANIM.TOTAL_FRAMES && autoReturn && !completedRef.current) {
@@ -235,13 +254,10 @@ export default function Animation({
   }
 
   if (frame >= ANIM.MORPH_START) {
-    // Morph phase - "WELCOME TO THE GAME JACK" + time
-    const now = new Date();
-    const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-
+    // Morph phase - "WELCOME TO THE GAME JACK" + live clock
     // Two lines of text
     const line1Points = textToPointsBold('WELCOME TO THE GAME JACK');
-    const line2Points = timeToSegmentPoints(timeStr);
+    const line2Points = timeToSegmentPoints(currentTime);
 
     const line1Width = line1Points.reduce((max, p) => Math.max(max, p[1]), 0) + 1;
     const line2Width = line2Points.reduce((max, p) => Math.max(max, p.point[1]), 0) + 1;
