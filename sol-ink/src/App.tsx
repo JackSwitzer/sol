@@ -2,11 +2,11 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import SettingsPanel from './components/SettingsPanel.js';
 import Animation from './components/Animation.js';
+import CountdownAnimation from './components/CountdownAnimation.js';
 import { useLampConnection } from './hooks/useLampConnection.js';
 import { execSync, spawn } from 'child_process';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
-// Theme is now hardcoded (sunrise → green), so no theme imports needed
 
 // Profiles with presets
 const PROFILES = {
@@ -57,6 +57,19 @@ function calculateStartTime(wakeHour: number, wakeMinute: number, duration: numb
   return formatTime(startHour, startMinute);
 }
 
+function calculateMinutesUntilWake(wakeHour: number, wakeMinute: number): number {
+  const now = new Date();
+  const wake = new Date();
+  wake.setHours(wakeHour, wakeMinute, 0, 0);
+
+  // If wake time is earlier today, it means tomorrow
+  if (wake <= now) {
+    wake.setDate(wake.getDate() + 1);
+  }
+
+  return Math.ceil((wake.getTime() - now.getTime()) / 60000);
+}
+
 // ASCII Sun for header
 const SUN_HEADER = [
   '     \\  │  /     ',
@@ -87,7 +100,7 @@ export default function App() {
   const { stdout } = useStdout();
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [selectedField, setSelectedField] = useState(0);
-  const [animationMode, setAnimationMode] = useState<'none' | 'preview' | 'confirm'>('none');
+  const [animationMode, setAnimationMode] = useState<'none' | 'preview' | 'countdown' | 'sunrise'>('none');
   const [alarmActive, setAlarmActive] = useState<{ wakeTime: string } | null>(null);
   const { connected, checking, checkConnection } = useLampConnection();
   const pendingAlarmRef = useRef(false);
@@ -303,13 +316,14 @@ asyncio.run(off())
     if (key.return) {
       pendingAlarmRef.current = true;
       fillBlack(stdout);
-      setAnimationMode('confirm');
+      startAlarm(); // Start the lamp alarm process
+      setAnimationMode('countdown');
       return;
     }
 
-    // Navigation (5 fields now)
+    // Navigation (4 fields: Profile, Wake, Duration, End Temp)
     if (key.upArrow) {
-      setSelectedField(prev => (prev - 1 + 5) % 4);
+      setSelectedField(prev => (prev - 1 + 4) % 4);
     } else if (key.downArrow) {
       setSelectedField(prev => (prev + 1) % 4);
     }
@@ -335,13 +349,40 @@ asyncio.run(off())
     }
   });
 
-  if (animationMode !== 'none') {
+  // Handle countdown complete (cancelled)
+  const handleCountdownComplete = useCallback((cancelled?: boolean) => {
+    pendingAlarmRef.current = false;
+    setAnimationMode('none');
+  }, []);
+
+  // Handle wake time reached - transition to sunrise animation
+  const handleWakeTime = useCallback(() => {
+    setAnimationMode('sunrise');
+  }, []);
+
+  if (animationMode === 'preview' || animationMode === 'sunrise') {
     return (
       <Animation
         width={dimensions.width}
         height={dimensions.height}
         autoReturn={animationMode === 'preview'}
         onComplete={handleAnimationComplete}
+      />
+    );
+  }
+
+  if (animationMode === 'countdown') {
+    const minutesUntilWake = calculateMinutesUntilWake(
+      settings.wakeTime.hour,
+      settings.wakeTime.minute
+    );
+    return (
+      <CountdownAnimation
+        width={dimensions.width}
+        height={dimensions.height}
+        minutesUntilWake={minutesUntilWake}
+        onComplete={handleCountdownComplete}
+        onWakeTime={handleWakeTime}
       />
     );
   }

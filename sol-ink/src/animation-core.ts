@@ -245,15 +245,33 @@ export const BOLD_FONT: Record<string, string[]> = {
   'E': ['●●●', '●  ', '●● ', '●  ', '●●●'],
   'G': [' ●●', '●  ', '● ●', '● ●', ' ●●'],
   'H': ['● ●', '● ●', '●●●', '● ●', '● ●'],
+  'I': ['●●●', ' ● ', ' ● ', ' ● ', '●●●'],
   'J': ['  ●', '  ●', '  ●', '● ●', ' ● '],
   'K': ['● ●', '●● ', '●  ', '●● ', '● ●'],
   'L': ['●  ', '●  ', '●  ', '●  ', '●●●'],
   'M': ['● ●', '●●●', '● ●', '● ●', '● ●'],
+  'N': ['● ●', '●●●', '●●●', '● ●', '● ●'],
   'O': [' ● ', '● ●', '● ●', '● ●', ' ● '],
+  'S': ['●●●', '●  ', '●●●', '  ●', '●●●'],
   'T': ['●●●', ' ● ', ' ● ', ' ● ', ' ● '],
+  'U': ['● ●', '● ●', '● ●', '● ●', '●●●'],
   'W': ['● ●', '● ●', '●●●', '●●●', '● ●'],
   ' ': [' ', ' ', ' ', ' ', ' '],
 };
+
+// Moon shape - solid filled circle of dots (for countdown animation)
+export function getMoonPoints(radius: number): Point[] {
+  const points: Point[] = [];
+  for (let r = -radius; r <= radius; r++) {
+    for (let c = -radius; c <= radius; c++) {
+      // Filled circle using distance formula
+      if (r * r + c * c <= radius * radius) {
+        points.push([r, c]);
+      }
+    }
+  }
+  return points;
+}
 
 // 7-segment display font for time (classic alarm clock style)
 // Segments: top, top-left, top-right, middle, bottom-left, bottom-right, bottom
