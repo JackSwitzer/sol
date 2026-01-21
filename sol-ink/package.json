@@ -1,0 +1,28 @@
+{
+  "name": "sol-ink",
+  "version": "1.0.0",
+  "description": "Terminal TUI for Sol Sunrise Alarm",
+  "type": "module",
+  "main": "src/index.tsx",
+  "scripts": {
+    "start": "bun run src/index.tsx",
+    "dev": "bun --watch run src/index.tsx",
+    "build": "bun build src/index.tsx --outdir dist --target node",
+    "stages": "bun run tools/stage-review.tsx",
+    "render": "bun run utils/render-frames.ts",
+    "render:all": "bun run utils/render-frames.ts --all --save"
+  },
+  "dependencies": {
+    "ink": "^5.0.1",
+    "ink-select-input": "^6.0.0",
+    "ink-spinner": "^5.0.0",
+    "ink-text-input": "^6.0.0",
+    "react": "^18.3.1",
+    "react-devtools-core": "^7.0.1"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/react": "^18.3.3",
+    "typescript": "^5.5.3"
+  }
+}
