@@ -326,7 +326,7 @@ async def discover_bulbs():
     return devices
 
 
-async def run_sunrise(ip: str, profile: str = "standard", verbose: bool = True, auto_off_hours: float = 3.0):
+async def run_sunrise(ip: str, profile: str = "standard", verbose: bool = True, auto_off_hours: float = 2.0):
     """Run the science-backed sunrise simulation."""
     if profile not in SUNRISE_PROFILES:
         print(f"Unknown profile '{profile}'. Available: {', '.join(SUNRISE_PROFILES.keys())}")
@@ -408,18 +408,17 @@ async def run_sunrise(ip: str, profile: str = "standard", verbose: bool = True, 
     if auto_off_hours > 0:
         off_time = datetime.now() + timedelta(hours=auto_off_hours)
         print(f"\n  Lamp will auto-off at {off_time.strftime('%H:%M')} ({auto_off_hours:.1f}h from now)")
-        print("  Press Ctrl+C to cancel auto-off and keep lamp on\n")
+        print("  Press Ctrl+C to turn off lamp and exit\n")
 
         try:
             await asyncio.sleep(auto_off_hours * 3600)
-            # Reconnect since it's been a while
             bulb = await Device.connect(host=ip)
             await bulb.turn_off()
             print(f"\n  Auto-off complete. Lamp turned off at {datetime.now().strftime('%H:%M')}")
-        except asyncio.CancelledError:
-            print("\n  Auto-off cancelled. Lamp will stay on.")
-        except KeyboardInterrupt:
-            print("\n  Auto-off cancelled. Lamp will stay on.")
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            bulb = await Device.connect(host=ip)
+            await bulb.turn_off()
+            print(f"\n  Interrupted. Lamp turned off at {datetime.now().strftime('%H:%M')}")
 
 
 async def run_demo(ip: str):
@@ -559,7 +558,7 @@ def show_waiting_screen(start_dt: datetime, end_dt: datetime, profile_name: str)
     console.print("█" * width, style=border_color, end="")
 
 
-async def schedule_sunrise(wake_time: str, ip: str, profile: str, auto_off_hours: float = 3.0):
+async def schedule_sunrise(wake_time: str, ip: str, profile: str, auto_off_hours: float = 2.0):
     """Schedule sunrise with live countdown display."""
     try:
         wake_hour, wake_minute = map(int, wake_time.split(":"))
@@ -951,8 +950,8 @@ Profiles: standard (30min), quick (20min), gentle (45min)
             p.add_argument("-p", "--profile", default="standard",
                            help="Sunrise profile (default: standard)")
         if include_auto_off:
-            p.add_argument("--auto-off", type=float, default=3.0,
-                           help="Hours after sunrise to auto-turn off lamp (default: 3.0)")
+            p.add_argument("--auto-off", type=float, default=2.0,
+                           help="Hours after sunrise to auto-turn off lamp (default: 2.0)")
             p.add_argument("--no-auto-off", action="store_true",
                            help="Disable auto-off (lamp stays on indefinitely)")
 
