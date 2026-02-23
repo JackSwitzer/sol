@@ -14,6 +14,7 @@ import math
 from datetime import datetime, timedelta
 from pathlib import Path
 from kasa import Discover, Device, Module
+from kasa.exceptions import KasaException
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
@@ -326,6 +327,54 @@ async def discover_bulbs():
     return devices
 
 
+async def connect_bulb(ip: str, retries: int = 3, label: str = "bulb") -> Device:
+    """Connect to a Kasa bulb with retry + exponential backoff.
+
+    Returns a connected, updated Device instance.
+    On final failure, prints a diagnostic and raises SystemExit(1).
+    """
+    last_error = None
+    for attempt in range(1, retries + 1):
+        try:
+            bulb = await Device.connect(host=ip)
+            await bulb.update()
+            return bulb
+        except (OSError, KasaException, ConnectionError, asyncio.TimeoutError) as e:
+            last_error = e
+            if attempt < retries:
+                delay = 2 ** attempt  # 2s, 4s, 8s
+                print(f"  [{label}] Connection attempt {attempt}/{retries} failed: {e}")
+                print(f"  Retrying in {delay}s...")
+                await asyncio.sleep(delay)
+
+    print(f"\n  Failed to connect to {label} at {ip} after {retries} attempt(s).")
+    print(f"  Error: {last_error}")
+    print(f"\n  Troubleshooting:")
+    print(f"    - Is the bulb powered on?")
+    print(f"    - Is it on the same WiFi network?")
+    print(f"    - Is the IP address correct? (try: sol discover)")
+    raise SystemExit(1)
+
+
+async def check_bulb_status(ip: str) -> dict | None:
+    """Connect to bulb and return info dict, or None if unreachable."""
+    try:
+        bulb = await connect_bulb(ip, retries=2, label="status check")
+        light = bulb.modules.get(Module.Light)
+        info = {
+            "alias": bulb.alias,
+            "model": bulb.model,
+            "ip": ip,
+            "is_on": bulb.is_on,
+            "brightness": light.brightness if light else None,
+            "color_temp": light.color_temp if light else None,
+            "rssi": bulb.rssi if hasattr(bulb, "rssi") else None,
+        }
+        return info
+    except SystemExit:
+        return None
+
+
 async def run_sunrise(ip: str, profile: str = "standard", verbose: bool = True, auto_off_hours: float = 2.0):
     """Run the science-backed sunrise simulation."""
     if profile not in SUNRISE_PROFILES:
@@ -342,8 +391,7 @@ async def run_sunrise(ip: str, profile: str = "standard", verbose: bool = True, 
         print(f"  Duration: {duration_minutes} minutes")
         print()
 
-    bulb = await Device.connect(host=ip)
-    await bulb.update()
+    bulb = await connect_bulb(ip, label="sunrise bulb")
     light = bulb.modules[Module.Light]
 
     # Ensure lamp is off before we begin
@@ -412,13 +460,19 @@ async def run_sunrise(ip: str, profile: str = "standard", verbose: bool = True, 
 
         try:
             await asyncio.sleep(auto_off_hours * 3600)
-            bulb = await Device.connect(host=ip)
-            await bulb.turn_off()
-            print(f"\n  Auto-off complete. Lamp turned off at {datetime.now().strftime('%H:%M')}")
+            try:
+                bulb = await connect_bulb(ip, retries=2, label="auto-off")
+                await bulb.turn_off()
+                print(f"\n  Auto-off complete. Lamp turned off at {datetime.now().strftime('%H:%M')}")
+            except SystemExit:
+                print("\n  Auto-off failed: could not reach bulb.")
         except (asyncio.CancelledError, KeyboardInterrupt):
-            bulb = await Device.connect(host=ip)
-            await bulb.turn_off()
-            print(f"\n  Interrupted. Lamp turned off at {datetime.now().strftime('%H:%M')}")
+            try:
+                bulb = await connect_bulb(ip, retries=1, label="cleanup")
+                await bulb.turn_off()
+                print(f"\n  Interrupted. Lamp turned off at {datetime.now().strftime('%H:%M')}")
+            except SystemExit:
+                print(f"\n  Interrupted. Could not reach bulb to turn off.")
 
 
 async def run_demo(ip: str):
@@ -426,8 +480,7 @@ async def run_demo(ip: str):
     print("Starting demo mode (35 seconds)")
     print()
 
-    bulb = await Device.connect(host=ip)
-    await bulb.update()
+    bulb = await connect_bulb(ip, label="demo bulb")
     light = bulb.modules[Module.Light]
 
     # Start from off
@@ -480,7 +533,7 @@ async def run_demo(ip: str):
     print("Demo complete! Light off.")
 
 
-def show_waiting_screen(start_dt: datetime, end_dt: datetime, profile_name: str):
+def show_waiting_screen(start_dt: datetime, end_dt: datetime, profile_name: str, bulb_info: dict | None = None):
     """Show full-screen waiting display with countdown."""
     import shutil
 
@@ -549,6 +602,12 @@ def show_waiting_screen(start_dt: datetime, end_dt: datetime, profile_name: str)
             console.print(" " * pad, style=f"on {sky_bg}", end="")
             console.print(msg, style=f"dim on {sky_bg}", end="")
             console.print(" " * (width - 2 - pad - len(msg)), style=f"on {sky_bg}", end="")
+        elif row == msg_row + 8 and bulb_info:
+            msg = f"Bulb: {bulb_info['alias']} ({bulb_info['ip']})"
+            pad = (width - 2 - len(msg)) // 2
+            console.print(" " * pad, style=f"on {sky_bg}", end="")
+            console.print(msg, style=f"dim green on {sky_bg}", end="")
+            console.print(" " * (width - 2 - pad - len(msg)), style=f"on {sky_bg}", end="")
         else:
             console.print(" " * (width - 2), style=f"on {sky_bg}", end="")
 
@@ -580,9 +639,18 @@ async def schedule_sunrise(wake_time: str, ip: str, profile: str, auto_off_hours
     start_dt = wake_dt
     end_dt = wake_dt + timedelta(minutes=duration_minutes)
 
+    # Pre-flight: verify bulb is reachable before committing to the alarm
+    print(f"  Checking bulb at {ip}...")
+    bulb_info = await check_bulb_status(ip)
+    if bulb_info is None:
+        print(f"\n  Cannot reach bulb at {ip}. Alarm not set.")
+        print(f"  Fix the connection and try again.")
+        return
+    print(f"  Connected: {bulb_info['alias']} ({ip})")
+
     # Show countdown until sunrise
     while datetime.now() < start_dt:
-        show_waiting_screen(start_dt, end_dt, config['name'])
+        show_waiting_screen(start_dt, end_dt, config['name'], bulb_info=bulb_info)
         await asyncio.sleep(1)
 
     # Run the actual sunrise (bulb + terminal animation synced)
@@ -683,9 +751,31 @@ async def cmd_discover(args):
 async def cmd_off(args):
     """Turn off the bulb."""
     ip = args.ip or DEFAULT_BULB_IP
-    bulb = await Device.connect(host=ip)
+    bulb = await connect_bulb(ip, label="bulb")
     await bulb.turn_off()
     print(f"Turned off bulb at {ip}")
+
+
+async def cmd_status(args):
+    """Show bulb connection status and info."""
+    ip = args.ip or DEFAULT_BULB_IP
+    print(f"Checking bulb at {ip}...\n")
+    info = await check_bulb_status(ip)
+    if info is None:
+        return  # connect_bulb already printed diagnostics
+
+    state = "ON" if info["is_on"] else "OFF"
+    print(f"  Alias:       {info['alias']}")
+    print(f"  Model:       {info['model']}")
+    print(f"  IP:          {info['ip']}")
+    print(f"  State:       {state}")
+    if info["brightness"] is not None:
+        print(f"  Brightness:  {info['brightness']}%")
+    if info["color_temp"] is not None:
+        print(f"  Color Temp:  {info['color_temp']}K")
+    if info["rssi"] is not None:
+        print(f"  WiFi Signal: {info['rssi']} dBm")
+    print()
 
 
 async def cmd_profiles(args):
@@ -934,6 +1024,7 @@ Examples:
   %(prog)s rise 06:30               # Sunrise starts at 6:30 AM
   %(prog)s now                      # Start sunrise immediately
   %(prog)s now -p quick             # Start quick 20-min sunrise
+  %(prog)s status                    # Check bulb connection and info
   %(prog)s demo                     # Fun 35-second light show
   %(prog)s profiles                 # List all available profiles
 
@@ -995,6 +1086,11 @@ Profiles: standard (30min), quick (20min), gentle (45min)
     off_parser.add_argument("--ip", help=f"Bulb IP address (default: {DEFAULT_BULB_IP})")
     off_parser.set_defaults(func=cmd_off)
 
+    # 'status' - check bulb connection
+    status_parser = subparsers.add_parser("status", help="Check bulb connection and show info")
+    status_parser.add_argument("--ip", help=f"Bulb IP address (default: {DEFAULT_BULB_IP})")
+    status_parser.set_defaults(func=cmd_status)
+
     # 'profiles' - list profiles
     profiles_parser = subparsers.add_parser("profiles", help="List available sunrise profiles")
     profiles_parser.set_defaults(func=cmd_profiles)
@@ -1031,7 +1127,15 @@ Profiles: standard (30min), quick (20min), gentle (45min)
         parser.print_help()
         return
 
-    asyncio.run(args.func(args))
+    try:
+        asyncio.run(args.func(args))
+    except KeyboardInterrupt:
+        print("\n  Interrupted.")
+    except SystemExit:
+        pass  # connect_bulb already printed diagnostics
+    except (OSError, KasaException, ConnectionError) as e:
+        print(f"\n  Connection error: {e}")
+        print(f"  Check that the bulb is powered on and reachable.")
 
 
 if __name__ == "__main__":
