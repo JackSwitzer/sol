@@ -9,8 +9,14 @@ Based on research:
 
 import argparse
 import asyncio
+import copy
 import json
 import math
+import shutil
+import subprocess
+import sys
+import termios
+import tty
 from datetime import datetime, timedelta
 from pathlib import Path
 from kasa import Discover, Device, Module
@@ -23,6 +29,305 @@ from rich.align import Align
 from rich import print as rprint
 
 console = Console()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# INTERACTIVE TUI - Sunrise Configuration Interface
+# ═══════════════════════════════════════════════════════════════════════════════
+
+SUN_ASCII = [
+    "            ·  ✦  ·            ",
+    "        ✦       │       ✦      ",
+    "     ·    \\     │     /    ·   ",
+    "            \\   │   /          ",
+    "   ─ ─ ─ ─ ─ ( ☀ ) ─ ─ ─ ─ ─  ",
+    "            /   │   \\          ",
+    "     ·    /     │     \\    ·   ",
+    "        ✦       │       ✦      ",
+    "            ·  ✦  ·            ",
+]
+
+
+def get_key():
+    """Read a single keypress."""
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setraw(sys.stdin.fileno())
+        ch = sys.stdin.read(1)
+        if ch == '\x1b':
+            ch2 = sys.stdin.read(1)
+            if ch2 == '[':
+                ch3 = sys.stdin.read(1)
+                if ch3 == 'A': return 'UP'
+                if ch3 == 'B': return 'DOWN'
+                if ch3 == 'C': return 'RIGHT'
+                if ch3 == 'D': return 'LEFT'
+        if ch == '\r' or ch == '\n': return 'ENTER'
+        if ch == 'q' or ch == '\x03': return 'QUIT'
+        if ch == '\t': return 'TAB'
+        return ch
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+
+def render_setup_screen(wake_hour: int, wake_min: int, duration: int, max_temp: int,
+                        auto_off: float, lamp_on: bool, selected_field: int, lamp_status: str):
+    """Render the interactive setup screen."""
+    term = shutil.get_terminal_size()
+    width = term.columns
+    height = term.lines - 1
+
+    highlight = "bright_yellow"
+    dim = "grey58"
+
+    console.clear()
+    sys.stdout.write("\033[48;5;233m")
+    sys.stdout.write("\033[2J")
+    sys.stdout.flush()
+
+    content_height = 30
+    top_pad = max(0, (height - content_height) // 2)
+
+    def p(text, style=""):
+        console.print(text, style=f"{style} on grey3")
+
+    for _ in range(top_pad):
+        p(" " * width)
+
+    p(" " * width)
+    sun_colors = ["grey42", "grey50", "dark_orange", "dark_orange", highlight,
+                  "dark_orange", "dark_orange", "grey50", "grey42"]
+    for i, line in enumerate(SUN_ASCII):
+        p(line.center(width), sun_colors[i])
+
+    p(" " * width)
+    p("S O L".center(width), f"bold {highlight}")
+    p("sunrise alarm".center(width), "dim dark_orange")
+    p(" " * width)
+
+    status_color = "green" if "Connected" in lamp_status else "red"
+    p(f"◉ {lamp_status}".center(width), status_color)
+    p(" " * width)
+
+    box_width = 44
+    pad = (width - box_width) // 2
+    lp = " " * pad
+    rp = " " * (width - box_width - pad)
+
+    p(f"{lp}╭{'─' * (box_width - 2)}╮{rp}", dim)
+
+    # Field 0: Wake time
+    fs = f"bold {highlight}" if selected_field == 0 else dim
+    al = "◀ " if selected_field == 0 else "  "
+    ar = " ▶" if selected_field == 0 else "  "
+    val = f"{wake_hour:02d}:{wake_min:02d}"
+    p(f"{lp}│  WAKE TIME        {al}[{fs}]{val}[/{fs}]{ar}       │{rp}", dim)
+    p(f"{lp}│{' ' * (box_width - 2)}│{rp}", dim)
+
+    # Field 1: Duration
+    fs = f"bold {highlight}" if selected_field == 1 else dim
+    al = "◀ " if selected_field == 1 else "  "
+    ar = " ▶" if selected_field == 1 else "  "
+    val = f"{duration} min"
+    p(f"{lp}│  DURATION         {al}[{fs}]{val:>5}[/{fs}]{ar}       │{rp}", dim)
+    p(f"{lp}│{' ' * (box_width - 2)}│{rp}", dim)
+
+    # Field 2: End temp
+    fs = f"bold {highlight}" if selected_field == 2 else dim
+    al = "◀ " if selected_field == 2 else "  "
+    ar = " ▶" if selected_field == 2 else "  "
+    val = f"{max_temp}K"
+    p(f"{lp}│  END TEMP         {al}[{fs}]{val:>5}[/{fs}]{ar}       │{rp}", dim)
+    p(f"{lp}│{' ' * (box_width - 2)}│{rp}", dim)
+
+    # Field 3: Auto-off
+    fs = f"bold {highlight}" if selected_field == 3 else dim
+    al = "◀ " if selected_field == 3 else "  "
+    ar = " ▶" if selected_field == 3 else "  "
+    if auto_off == 0:
+        val = "  off"
+    elif auto_off < 1:
+        val = f"{int(auto_off * 60)}m"
+    elif auto_off == int(auto_off):
+        val = f"{int(auto_off)}h"
+    else:
+        h = int(auto_off)
+        m = int((auto_off - h) * 60)
+        val = f"{h}h{m:02d}m"
+    p(f"{lp}│  AUTO-OFF         {al}[{fs}]{val:>5}[/{fs}]{ar}       │{rp}", dim)
+    p(f"{lp}│{' ' * (box_width - 2)}│{rp}", dim)
+
+    # Field 4: Lamp on/off toggle
+    fs = f"bold {highlight}" if selected_field == 4 else dim
+    al = "◀ " if selected_field == 4 else "  "
+    ar = " ▶" if selected_field == 4 else "  "
+    val = " ON" if lamp_on else " OFF"
+    lamp_color = "green" if lamp_on else "red"
+    if selected_field == 4:
+        p(f"{lp}│  LAMP             {al}[bold {lamp_color}]{val}[/bold {lamp_color}]{ar}       │{rp}", dim)
+    else:
+        p(f"{lp}│  LAMP             {al}[{lamp_color}]{val}[/{lamp_color}]{ar}       │{rp}", dim)
+
+    p(f"{lp}╰{'─' * (box_width - 2)}╯{rp}", dim)
+
+    p(" " * width)
+
+    wake_time = datetime.now().replace(hour=wake_hour, minute=wake_min, second=0)
+    if wake_time <= datetime.now():
+        wake_time += timedelta(days=1)
+    start_time = wake_time - timedelta(minutes=duration)
+    info = f"Sunrise: {start_time.strftime('%H:%M')} → Wake: {wake_time.strftime('%H:%M')}"
+    p(info.center(width), "dark_orange")
+
+    p(" " * width)
+    p(" " * width)
+
+    buttons = " [ ENTER ] Start Alarm      [ Q ] Quit "
+    p(buttons.center(width), dim)
+    p(" " * width)
+    p("↑↓ select  ←→ adjust".center(width), "grey50")
+
+    remaining = height - content_height - top_pad
+    for _ in range(max(0, remaining)):
+        p(" " * width)
+
+
+def reset_terminal():
+    """Reset terminal to default colors."""
+    sys.stdout.write("\033[0m\033[2J\033[H")
+    sys.stdout.flush()
+
+
+async def interactive_setup():
+    """Run the interactive setup TUI."""
+    wake_hour = 7
+    wake_min = 0
+    duration = 30
+    max_temp = 5000
+    auto_off = 2.0
+    lamp_on = False
+    selected_field = 0  # 0=time, 1=duration, 2=temp, 3=auto-off, 4=lamp
+
+    durations = list(range(5, 65, 5))  # 5, 10, 15, ... 60
+    temps = [2500, 2700, 3000, 3500, 4000, 4500, 5000, 5500, 6000, 6500]
+    auto_offs = [0] + [i * 0.25 for i in range(1, 13)]  # 0, 15m, 30m, ... 3h
+
+    ip = DEFAULT_BULB_IP
+
+    # Always turn off lamp when opening menu
+    try:
+        bulb = await Device.connect(host=ip)
+        await bulb.update()
+        lamp_status = f"Connected: {bulb.alias}"
+        if bulb.is_on:
+            await bulb.turn_off()
+        lamp_on = False
+    except Exception as e:
+        lamp_status = f"Not connected: {str(e)[:30]}"
+
+    try:
+        while True:
+            render_setup_screen(wake_hour, wake_min, duration, max_temp,
+                                auto_off, lamp_on, selected_field, lamp_status)
+            key = get_key()
+
+            if key == 'QUIT':
+                reset_terminal()
+                await safe_turn_off(ip, quiet=True)
+                console.print("\n  Cancelled. Lamp off.\n", style="dim")
+                return
+
+            elif key == 'ENTER':
+                reset_terminal()
+                console.print("\n  Preparing alarm...\n", style="orange1")
+
+                await safe_turn_off(ip, quiet=True)
+
+                # Pick closest profile for phase structure
+                if duration <= 20:
+                    profile = "quick"
+                elif duration <= 35:
+                    profile = "standard"
+                else:
+                    profile = "gentle"
+
+                wake_time = f"{wake_hour:02d}:{wake_min:02d}"
+                script_dir = Path(__file__).parent
+                launcher = "/tmp/sol-launcher.sh"
+
+                with open(launcher, 'w') as f:
+                    f.write(f'#!/bin/bash\ncd "{script_dir}"\n')
+                    f.write(f'echo $$ > /tmp/sol-sunrise.pid\n')
+                    f.write(f'exec caffeinate -is uv run python main.py up {wake_time} -p {profile} --duration {duration} --end-temp {max_temp} --auto-off {auto_off}\n')
+
+                subprocess.run(['chmod', '+x', launcher])
+
+                applescript = f'''
+                tell application "Terminal"
+                    activate
+                    do script "{launcher}"
+                    delay 0.8
+                    tell application "System Events" to tell process "Terminal"
+                        keystroke "f" using {{command down, control down}}
+                    end tell
+                end tell
+                '''
+                subprocess.run(['osascript', '-e', applescript])
+
+                console.print(f"  ☀ Alarm set for {wake_time}", style="bright_yellow")
+                console.print(f"  Running in new terminal window.\n", style="dim")
+                return
+
+            elif key in ('UP', 'TAB'):
+                selected_field = (selected_field - 1) % 5
+
+            elif key == 'DOWN':
+                selected_field = (selected_field + 1) % 5
+
+            elif key == 'LEFT' or key == 'RIGHT':
+                if selected_field == 0:
+                    # Wake time still wraps (makes sense for time)
+                    delta = 5 if key == 'RIGHT' else -5
+                    wake_min += delta
+                    if wake_min >= 60:
+                        wake_min = 0
+                        wake_hour = (wake_hour + 1) % 24
+                    elif wake_min < 0:
+                        wake_min = 55
+                        wake_hour = (wake_hour - 1) % 24
+                elif selected_field == 1:
+                    idx = durations.index(duration) if duration in durations else 5
+                    delta = 1 if key == 'RIGHT' else -1
+                    idx = max(0, min(len(durations) - 1, idx + delta))
+                    duration = durations[idx]
+                elif selected_field == 2:
+                    idx = temps.index(max_temp) if max_temp in temps else 4
+                    delta = 1 if key == 'RIGHT' else -1
+                    idx = max(0, min(len(temps) - 1, idx + delta))
+                    max_temp = temps[idx]
+                elif selected_field == 3:
+                    idx = auto_offs.index(auto_off) if auto_off in auto_offs else 8
+                    delta = 1 if key == 'RIGHT' else -1
+                    idx = max(0, min(len(auto_offs) - 1, idx + delta))
+                    auto_off = auto_offs[idx]
+                elif selected_field == 4:
+                    # Toggle lamp
+                    lamp_on = not lamp_on
+                    try:
+                        bulb = await Device.connect(host=ip)
+                        if lamp_on:
+                            await bulb.turn_on()
+                        else:
+                            await bulb.turn_off()
+                    except Exception:
+                        pass
+
+    except KeyboardInterrupt:
+        reset_terminal()
+        await safe_turn_off(ip, quiet=True)
+        console.print("\n  Cancelled. Lamp off.\n", style="dim")
+
 
 def get_gradient_color(pos: int, total: int, stage: int) -> str:
     """Get color name based on position and stage."""
@@ -248,9 +553,23 @@ def show_progress(phase: int, total_phases: int, brightness: int, temp: int):
     console.print(f"  [{color}]{bar}[/{color}] {brightness:3d}% • {temp}K", end="\r")
 
 # Default configuration
-DEFAULT_BULB_IP = "192.168.1.77"
+DEFAULT_BULB_IP = "192.168.1.70"
 DEFAULT_WAKE_TIME = "06:30"
 CONFIG_FILE = Path(__file__).parent / "sunrise_config.json"
+
+
+async def safe_turn_off(ip: str = DEFAULT_BULB_IP, quiet: bool = False):
+    """Best-effort lamp turn off. Never raises."""
+    try:
+        bulb = await Device.connect(host=ip)
+        await bulb.update()
+        if bulb.is_on:
+            await bulb.turn_off()
+            if not quiet:
+                print(f"  Lamp off.")
+    except Exception:
+        if not quiet:
+            print(f"  Could not reach lamp to turn off.")
 
 # Science-backed sunrise phases (based on natural dawn progression)
 # Phase 1: Pre-dawn (deep red/orange glow) - melatonin still high, very gentle
@@ -260,6 +579,7 @@ SUNRISE_PROFILES = {
     "standard": {
         "name": "Standard (30 min)",
         "duration_minutes": 30,
+        "auto_off_hours": 2.0,
         "description": "Research-backed 30-min sunrise. Good for most people.",
         "phases": [
             {"pct": 0.40, "start_brightness": 1,  "end_brightness": 20,  "start_temp": 2500, "end_temp": 2700},
@@ -270,6 +590,7 @@ SUNRISE_PROFILES = {
     "quick": {
         "name": "Quick (20 min)",
         "duration_minutes": 20,
+        "auto_off_hours": 1.0,
         "description": "Faster sunrise for light sleepers or when short on time.",
         "phases": [
             {"pct": 0.30, "start_brightness": 1,  "end_brightness": 25,  "start_temp": 2500, "end_temp": 2800},
@@ -280,6 +601,7 @@ SUNRISE_PROFILES = {
     "gentle": {
         "name": "Gentle (45 min)",
         "duration_minutes": 45,
+        "auto_off_hours": 2.0,
         "description": "Extended sunrise for deep sleepers. More gradual transition.",
         "phases": [
             {"pct": 0.45, "start_brightness": 1,  "end_brightness": 15,  "start_temp": 2500, "end_temp": 2600},
@@ -291,6 +613,7 @@ SUNRISE_PROFILES = {
     "ablation_day1": {
         "name": "Ablation Day 1: Quick + Cool End",
         "duration_minutes": 20,
+        "auto_off_hours": 1.0,
         "description": "Test: Faster with cooler end temp (more alerting)",
         "phases": [
             {"pct": 0.30, "start_brightness": 1,  "end_brightness": 30,  "start_temp": 2500, "end_temp": 3000},
@@ -301,6 +624,7 @@ SUNRISE_PROFILES = {
     "ablation_day2": {
         "name": "Ablation Day 2: Standard + Warm",
         "duration_minutes": 30,
+        "auto_off_hours": 1.5,
         "description": "Test: Standard duration, warmer end temp (gentler)",
         "phases": [
             {"pct": 0.40, "start_brightness": 1,  "end_brightness": 20,  "start_temp": 2500, "end_temp": 2700},
@@ -311,6 +635,7 @@ SUNRISE_PROFILES = {
     "ablation_day3": {
         "name": "Ablation Day 3: Long + Oscillating",
         "duration_minutes": 40,
+        "auto_off_hours": 1.5,
         "description": "Test: Longer with gentle brightness oscillation in final phase",
         "phases": [
             {"pct": 0.40, "start_brightness": 1,  "end_brightness": 20,  "start_temp": 2500, "end_temp": 2700},
@@ -325,6 +650,24 @@ async def discover_bulbs():
     """Find Kasa devices on the network."""
     devices = await Discover.discover()
     return devices
+
+
+async def resolve_bulb_ip(ip: str) -> str:
+    """Try the given IP first; if unreachable, auto-discover a KL125 on the network."""
+    try:
+        bulb = await Device.connect(host=ip)
+        await bulb.update()
+        return ip
+    except (OSError, KasaException, ConnectionError, asyncio.TimeoutError):
+        print(f"  Bulb unreachable at {ip}, scanning network...")
+        devices = await Discover.discover()
+        for addr, dev in devices.items():
+            await dev.update()
+            if "KL125" in (dev.model or ""):
+                print(f"  Found {dev.alias} at {addr} (was {ip})")
+                return addr
+        print(f"  No KL125 bulb found on network.")
+        raise SystemExit(1)
 
 
 async def connect_bulb(ip: str, retries: int = 3, label: str = "bulb") -> Device:
@@ -375,15 +718,25 @@ async def check_bulb_status(ip: str) -> dict | None:
         return None
 
 
-async def run_sunrise(ip: str, profile: str = "standard", verbose: bool = True, auto_off_hours: float = 2.0):
+async def run_sunrise(ip: str, profile: str = "standard", verbose: bool = True, auto_off_hours: float = 2.0,
+                      duration_override: int = None, end_temp_override: int = None):
     """Run the science-backed sunrise simulation."""
     if profile not in SUNRISE_PROFILES:
         print(f"Unknown profile '{profile}'. Available: {', '.join(SUNRISE_PROFILES.keys())}")
         return
 
     config = SUNRISE_PROFILES[profile]
-    duration_minutes = config["duration_minutes"]
-    phases = config["phases"]
+    duration_minutes = duration_override or config["duration_minutes"]
+    phases = copy.deepcopy(config["phases"])
+
+    # Scale end temp if overridden
+    if end_temp_override:
+        base_end = phases[-1]["end_temp"]
+        if base_end != end_temp_override:
+            scale = end_temp_override / base_end
+            for phase in phases:
+                phase["end_temp"] = max(2500, min(6500, int(phase["end_temp"] * scale)))
+                phase["start_temp"] = max(2500, min(6500, int(phase["start_temp"] * scale)))
 
     if verbose:
         print(f"Starting sunrise: {config['name']}")
@@ -535,8 +888,6 @@ async def run_demo(ip: str):
 
 def show_waiting_screen(start_dt: datetime, end_dt: datetime, profile_name: str, bulb_info: dict | None = None):
     """Show full-screen waiting display with countdown."""
-    import shutil
-
     term_size = shutil.get_terminal_size()
     width = term_size.columns
     height = term_size.lines - 1
@@ -617,7 +968,8 @@ def show_waiting_screen(start_dt: datetime, end_dt: datetime, profile_name: str,
     console.print("█" * width, style=border_color, end="")
 
 
-async def schedule_sunrise(wake_time: str, ip: str, profile: str, auto_off_hours: float = 2.0):
+async def schedule_sunrise(wake_time: str, ip: str, profile: str, auto_off_hours: float = 2.0,
+                           duration_override: int = None, end_temp_override: int = None):
     """Schedule sunrise with live countdown display."""
     try:
         wake_hour, wake_minute = map(int, wake_time.split(":"))
@@ -626,7 +978,7 @@ async def schedule_sunrise(wake_time: str, ip: str, profile: str, auto_off_hours
         return
 
     config = SUNRISE_PROFILES.get(profile, SUNRISE_PROFILES["standard"])
-    duration_minutes = config["duration_minutes"]
+    duration_minutes = duration_override or config["duration_minutes"]
 
     now = datetime.now()
     wake_dt = now.replace(hour=wake_hour, minute=wake_minute, second=0, microsecond=0)
@@ -648,35 +1000,52 @@ async def schedule_sunrise(wake_time: str, ip: str, profile: str, auto_off_hours
         return
     print(f"  Connected: {bulb_info['alias']} ({ip})")
 
+    # Turn off lamp immediately so user can sleep
+    if bulb_info["is_on"]:
+        print(f"  Turning off lamp for sleep...")
+        bulb = await connect_bulb(ip, retries=2, label="lamp off")
+        await bulb.turn_off()
+        print(f"  Lamp off. Goodnight!")
+
     # Show countdown until sunrise
     while datetime.now() < start_dt:
         show_waiting_screen(start_dt, end_dt, config['name'], bulb_info=bulb_info)
         await asyncio.sleep(1)
 
     # Run the actual sunrise (bulb + terminal animation synced)
-    await run_sunrise(ip, profile, auto_off_hours=auto_off_hours)
+    await run_sunrise(ip, profile, auto_off_hours=auto_off_hours,
+                      duration_override=duration_override, end_temp_override=end_temp_override)
+
+
+def resolve_auto_off(args) -> float:
+    """Resolve auto-off hours: explicit arg > profile default."""
+    if args.auto_off is not None:
+        return args.auto_off
+    config = SUNRISE_PROFILES.get(args.profile, SUNRISE_PROFILES["standard"])
+    return config.get("auto_off_hours", 2.0)
 
 
 async def cmd_now(args):
     """Handle 'now' command - immediate sunrise."""
-    ip = args.ip or DEFAULT_BULB_IP
-    auto_off = 0 if args.no_auto_off else args.auto_off
-    await run_sunrise(ip, args.profile, auto_off_hours=auto_off)
+    ip = await resolve_bulb_ip(args.ip or DEFAULT_BULB_IP)
+    await run_sunrise(ip, args.profile, auto_off_hours=resolve_auto_off(args),
+                      duration_override=getattr(args, 'duration', None),
+                      end_temp_override=getattr(args, 'end_temp', None))
 
 
 async def cmd_at(args):
     """Handle 'at' command - scheduled sunrise."""
-    ip = args.ip or DEFAULT_BULB_IP
-    auto_off = 0 if args.no_auto_off else args.auto_off
-    await schedule_sunrise(args.time, ip, args.profile, auto_off_hours=auto_off)
+    ip = await resolve_bulb_ip(args.ip or DEFAULT_BULB_IP)
+    await schedule_sunrise(args.time, ip, args.profile, auto_off_hours=resolve_auto_off(args),
+                           duration_override=getattr(args, 'duration', None),
+                           end_temp_override=getattr(args, 'end_temp', None))
 
 
 async def cmd_up(args):
     """Handle 'up' command - wake up at specified time (sunrise ends then)."""
-    ip = args.ip or DEFAULT_BULB_IP
+    ip = await resolve_bulb_ip(args.ip or DEFAULT_BULB_IP)
     config = SUNRISE_PROFILES.get(args.profile, SUNRISE_PROFILES["standard"])
-    duration_minutes = config["duration_minutes"]
-    auto_off = 0 if args.no_auto_off else args.auto_off
+    duration_minutes = getattr(args, 'duration', None) or config["duration_minutes"]
 
     # Parse the wake time
     try:
@@ -695,15 +1064,16 @@ async def cmd_up(args):
     start_time = start_dt.strftime("%H:%M")
 
     print(f"Wake up at {args.time} → Sunrise starts at {start_time} ({duration_minutes} min)")
-    await schedule_sunrise(start_time, ip, args.profile, auto_off_hours=auto_off)
+    await schedule_sunrise(start_time, ip, args.profile, auto_off_hours=resolve_auto_off(args),
+                           duration_override=getattr(args, 'duration', None),
+                           end_temp_override=getattr(args, 'end_temp', None))
 
 
 async def cmd_rise(args):
     """Handle 'rise' command - sunrise starts at specified time."""
-    ip = args.ip or DEFAULT_BULB_IP
+    ip = await resolve_bulb_ip(args.ip or DEFAULT_BULB_IP)
     config = SUNRISE_PROFILES.get(args.profile, SUNRISE_PROFILES["standard"])
-    duration_minutes = config["duration_minutes"]
-    auto_off = 0 if args.no_auto_off else args.auto_off
+    duration_minutes = getattr(args, 'duration', None) or config["duration_minutes"]
 
     # Parse the start time
     try:
@@ -721,12 +1091,14 @@ async def cmd_rise(args):
     end_time = end_dt.strftime("%H:%M")
 
     print(f"Sunrise at {args.time} → Wake up at {end_time} ({duration_minutes} min)")
-    await schedule_sunrise(args.time, ip, args.profile, auto_off_hours=auto_off)
+    await schedule_sunrise(args.time, ip, args.profile, auto_off_hours=resolve_auto_off(args),
+                           duration_override=getattr(args, 'duration', None),
+                           end_temp_override=getattr(args, 'end_temp', None))
 
 
 async def cmd_demo(args):
     """Handle 'demo' command."""
-    ip = args.ip or DEFAULT_BULB_IP
+    ip = await resolve_bulb_ip(args.ip or DEFAULT_BULB_IP)
     await run_demo(ip)
 
 
@@ -750,7 +1122,7 @@ async def cmd_discover(args):
 
 async def cmd_off(args):
     """Turn off the bulb."""
-    ip = args.ip or DEFAULT_BULB_IP
+    ip = await resolve_bulb_ip(args.ip or DEFAULT_BULB_IP)
     bulb = await connect_bulb(ip, label="bulb")
     await bulb.turn_off()
     print(f"Turned off bulb at {ip}")
@@ -758,7 +1130,7 @@ async def cmd_off(args):
 
 async def cmd_status(args):
     """Show bulb connection status and info."""
-    ip = args.ip or DEFAULT_BULB_IP
+    ip = await resolve_bulb_ip(args.ip or DEFAULT_BULB_IP)
     print(f"Checking bulb at {ip}...\n")
     info = await check_bulb_status(ip)
     if info is None:
@@ -871,8 +1243,6 @@ async def cmd_test_ui(args):
 def show_sky_simulation(args):
     """Show sky simulation with time/date controls."""
     import time
-    import shutil
-    from datetime import datetime
 
     # Toronto coordinates
     TORONTO_LAT = 43.6532
@@ -970,7 +1340,6 @@ def show_sky_simulation(args):
 def export_sky_frames(output_dir: str):
     """Export sky frames for GIF creation."""
     import os
-    import shutil
 
     os.makedirs(output_dir, exist_ok=True)
 
@@ -1040,11 +1409,13 @@ Profiles: standard (30min), quick (20min), gentle (45min)
         if include_profile:
             p.add_argument("-p", "--profile", default="standard",
                            help="Sunrise profile (default: standard)")
+            p.add_argument("--duration", type=int, default=None,
+                           help="Override profile duration in minutes")
+            p.add_argument("--end-temp", type=int, default=None,
+                           help="Override end color temperature in Kelvin")
         if include_auto_off:
-            p.add_argument("--auto-off", type=float, default=2.0,
-                           help="Hours after sunrise to auto-turn off lamp (default: 2.0)")
-            p.add_argument("--no-auto-off", action="store_true",
-                           help="Disable auto-off (lamp stays on indefinitely)")
+            p.add_argument("--auto-off", type=float, default=None,
+                           help="Hours after sunrise to auto-off (default: from profile, 0 to disable)")
 
     # 'now' - immediate sunrise
     now_parser = subparsers.add_parser("now", help="Start sunrise immediately")
@@ -1124,13 +1495,14 @@ Profiles: standard (30min), quick (20min), gentle (45min)
     args = parser.parse_args()
 
     if not args.command:
-        parser.print_help()
+        asyncio.run(interactive_setup())
         return
 
     try:
         asyncio.run(args.func(args))
     except KeyboardInterrupt:
-        print("\n  Interrupted.")
+        print("\n  Interrupted. Turning off lamp...")
+        asyncio.run(safe_turn_off())
     except SystemExit:
         pass  # connect_bulb already printed diagnostics
     except (OSError, KasaException, ConnectionError) as e:
