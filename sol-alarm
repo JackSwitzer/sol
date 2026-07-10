@@ -1,0 +1,34 @@
+#!/bin/bash
+# sol-alarm <wake-time> [profile] — schedule a sunrise wake-up alarm.
+# Kills any existing alarm, verifies the lamp, then runs in background
+# with caffeinate so the Mac stays awake. PID saved to /tmp/sol-sunrise.pid.
+set -euo pipefail
+
+WAKE_TIME="${1:?Usage: sol-alarm <HH:MM> [standard|gentle|quick]}"
+PROFILE="${2:-standard}"
+PID_FILE=/tmp/sol-sunrise.pid
+LOG_FILE=/tmp/sol-sunrise.log
+cd ~/Desktop/Lamp
+
+# Kill existing alarm
+if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+    echo "Cancelling existing alarm (pid $(cat "$PID_FILE"))"
+    kill "$(cat "$PID_FILE")" 2>/dev/null || true
+fi
+rm -f "$PID_FILE"
+
+# Fail fast if lamp is unreachable, and turn it off for the night
+echo "Testing lamp connection..."
+uv run python main.py off >/dev/null 2>&1 || {
+    echo "ERROR: Lamp unreachable. Run 'sol pair' or check WiFi." >&2
+    exit 1
+}
+
+# Launch alarm in background; caffeinate keeps the Mac awake until it finishes
+nohup caffeinate -is uv run python main.py up "$WAKE_TIME" -p "$PROFILE" \
+    >"$LOG_FILE" 2>&1 &
+echo $! > "$PID_FILE"
+
+echo "Alarm set: wake at $WAKE_TIME ($PROFILE profile)"
+echo "  Log:    tail -f $LOG_FILE"
+echo "  Cancel: kill \$(cat $PID_FILE)"

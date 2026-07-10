@@ -1,0 +1,50 @@
+#!/bin/bash
+# sol-schedule — manage the daily sunrise alarm (launchd agent)
+#
+#   sol-schedule                 status: is the alarm armed, what's the countdown
+#   sol-schedule set 07:05 [profile]   change wake time (default profile: jack)
+#   sol-schedule off             disable the daily alarm
+#   sol-schedule on              re-enable it
+#   sol-schedule log             follow the live log
+set -euo pipefail
+
+PLIST=~/Library/LaunchAgents/com.sol.sunrise.plist
+LABEL=com.sol.sunrise
+UID_N=$(id -u)
+LOG=/tmp/sol-sunrise.log
+
+reload() {
+    launchctl bootout "gui/$UID_N/$LABEL" 2>/dev/null || true
+    sleep 1
+    : > "$LOG"
+    launchctl bootstrap "gui/$UID_N" "$PLIST"
+}
+
+status() {
+    if launchctl list 2>/dev/null | grep -q "$LABEL"; then
+        echo "Daily alarm: ARMED"
+        grep -oE 'up [0-9:]+ -p [a-z0-9_]+' "$PLIST" | head -1 | sed 's/up /  Wake time: /; s/ -p /   Profile: /'
+        sleep 1
+        export LC_ALL=C
+        tr -cd '\11\12\15\40-\176' < "$LOG" | grep -oE "Sunrise at [0-9:]+|Complete by [0-9:]+|T-[0-9:]+" | tail -3 | sed 's/^/  /'
+    else
+        echo "Daily alarm: OFF  (enable with: sol-schedule on)"
+    fi
+}
+
+case "${1:-status}" in
+    status) status ;;
+    set)
+        TIME="${2:?Usage: sol-schedule set HH:MM [profile]}"
+        PROFILE="${3:-jack}"
+        /usr/bin/sed -i '' -E "s|up [0-9:]+ -p [a-z0-9_]+|up $TIME -p $PROFILE|" "$PLIST"
+        reload
+        echo "Rescheduled: wake at $TIME ($PROFILE profile), every day."
+        sleep 5; status ;;
+    off)
+        launchctl bootout "gui/$UID_N/$LABEL" 2>/dev/null || true
+        echo "Daily alarm disabled." ;;
+    on) reload; sleep 5; status ;;
+    log) exec tail -f "$LOG" ;;
+    *) echo "Usage: sol-schedule [status|set HH:MM [profile]|off|on|log]"; exit 1 ;;
+esac
