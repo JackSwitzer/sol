@@ -1,0 +1,84 @@
+#!/bin/bash
+# sol-adopt — provision the Kasa bulb onto a WiFi network WITHOUT the Kasa app.
+#
+# How it works (this is all the app does):
+#   1. You power-cycle the bulb 3x slowly until it pulses -> it broadcasts an
+#      open setup hotspot named like "TP-LINK_Smart Bulb_XXXX" at 192.168.0.1
+#   2. This script joins that hotspot from the Mac
+#   3. Sends the target WiFi credentials over the local Kasa protocol
+#   4. Rejoins your normal WiFi and pairs (sol pair)
+#
+# Usage: sol-adopt [target-ssid]     (prompts for the WiFi password, never stored)
+set -uo pipefail
+
+WIFI_IF=$(networksetup -listallhardwareports | awk '/Wi-Fi/{getline; print $2}')
+[[ -n "$WIFI_IF" ]] || { echo "No WiFi interface found."; exit 1; }
+cd "$(dirname "$0")"
+
+current_ssid() {
+    ipconfig getsummary "$WIFI_IF" 2>/dev/null | awk -F' SSID : ' '/ SSID :/{print $2; exit}'
+}
+
+ORIG_SSID=$(current_ssid || true)
+
+# Target network: arg, or the Mac's current network
+TARGET_SSID="${1:-$ORIG_SSID}"
+[[ -n "$TARGET_SSID" ]] || { echo "Usage: sol-adopt <target-ssid>  (Mac isn't on WiFi, so specify one)"; exit 1; }
+
+echo "Target network for bulb: $TARGET_SSID"
+read -rsp "WiFi password for '$TARGET_SSID': " PSK; echo
+
+echo
+echo "Now power-cycle the lamp 3 times slowly (1s off / 1s on) until it pulses."
+read -rp "Press Enter when the bulb is pulsing... "
+
+# Find the bulb's setup hotspot
+echo "Scanning for bulb setup hotspot..."
+BULB_AP=""
+for attempt in $(seq 1 12); do
+    BULB_AP=$(system_profiler SPAirPortDataType 2>/dev/null \
+        | grep -oE '(TP-LINK_Smart Bulb_[A-F0-9]+|KL[0-9]+[^:]*)' | head -1 || true)
+    [[ -n "$BULB_AP" ]] && break
+    sleep 5
+done
+[[ -n "$BULB_AP" ]] || { echo "No bulb hotspot found after 60s. Is it pulsing?"; exit 1; }
+echo "Found: $BULB_AP"
+
+cleanup() {
+    if [[ -n "$ORIG_SSID" && "$(current_ssid)" != "$ORIG_SSID" ]]; then
+        echo "Rejoining $ORIG_SSID..."
+        networksetup -setairportnetwork "$WIFI_IF" "$ORIG_SSID" >/dev/null 2>&1 || true
+    fi
+}
+trap cleanup EXIT
+
+# Join the bulb's open hotspot
+echo "Joining bulb hotspot (Mac internet will blip)..."
+networksetup -setairportnetwork "$WIFI_IF" "$BULB_AP" || { echo "Failed to join $BULB_AP"; exit 1; }
+sleep 5
+
+# Send WiFi credentials over the local Kasa protocol (keytype 3 = WPA2-PSK)
+echo "Sending WiFi credentials to bulb..."
+if ! uv run kasa --host 192.168.0.1 --type bulb wifi join "$TARGET_SSID" --password "$PSK" --keytype 3; then
+    echo "Provisioning failed. Bulb may need another power-cycle."
+    exit 1
+fi
+unset PSK
+
+echo "Credentials sent. Bulb is rebooting onto '$TARGET_SSID'..."
+cleanup
+trap - EXIT
+sleep 20
+
+# Pair: find the bulb on the network and save its identity
+echo "Pairing..."
+for attempt in $(seq 1 6); do
+    if uv run python main.py pair </dev/null; then
+        echo
+        echo "Done. Bulb is adopted, paired, and app-free."
+        exit 0
+    fi
+    sleep 10
+done
+echo "Bulb provisioned but not found yet — give it a minute, then run: sol pair"
+exit 1
