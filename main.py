@@ -558,10 +558,33 @@ DEFAULT_WAKE_TIME = "06:30"
 CONFIG_FILE = Path(__file__).parent / "sunrise_config.json"
 
 
-async def safe_turn_off(ip: str = DEFAULT_BULB_IP, quiet: bool = False):
+def load_bulb_config() -> dict:
+    """Load saved bulb pairing info ({ip, mac, alias, model}), or {}."""
+    try:
+        return json.loads(CONFIG_FILE.read_text()).get("bulb", {})
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_bulb_config(ip: str, mac: str = None, alias: str = None, model: str = None):
+    """Persist bulb pairing info so future runs connect without discovery."""
+    try:
+        data = json.loads(CONFIG_FILE.read_text())
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    data["bulb"] = {"ip": ip, "mac": mac, "alias": alias, "model": model}
+    CONFIG_FILE.write_text(json.dumps(data, indent=2) + "\n")
+
+
+def default_bulb_ip() -> str:
+    """Paired bulb IP if available, else the legacy hardcoded default."""
+    return load_bulb_config().get("ip") or DEFAULT_BULB_IP
+
+
+async def safe_turn_off(ip: str = None, quiet: bool = False):
     """Best-effort lamp turn off. Never raises."""
     try:
-        bulb = await Device.connect(host=ip)
+        bulb = await Device.connect(host=ip or default_bulb_ip())
         await bulb.update()
         if bulb.is_on:
             await bulb.turn_off()
@@ -609,6 +632,18 @@ SUNRISE_PROFILES = {
             {"pct": 0.25, "start_brightness": 50, "end_brightness": 100, "start_temp": 3000, "end_temp": 4000},
         ]
     },
+    "jack": {
+        "name": "Jack (60 min, bell-curve supernova, warm reset)",
+        "duration_minutes": 60,
+        "auto_off_hours": 1.5,  # 1.5h warm reset period after wake
+        "description": "60-min bell-curve ramp: ~20 min sustained peak at 6500K with smooth eased shoulders, then 1.5h warm reset.",
+        "phases": [
+            {"pct": 0.35, "start_brightness": 1,   "end_brightness": 15,  "start_temp": 2500, "end_temp": 2700, "ease": True},
+            {"pct": 0.30, "start_brightness": 15,  "end_brightness": 100, "start_temp": 2700, "end_temp": 6500, "ease": True},
+            {"pct": 0.35, "start_brightness": 100, "end_brightness": 100, "start_temp": 6500, "end_temp": 6500},
+        ],
+        "post": {"brightness": 100, "temp": 3000},  # warm morning-sun reset after wake
+    },
     # Ablation test profiles for experimentation
     "ablation_day1": {
         "name": "Ablation Day 1: Quick + Cool End",
@@ -653,20 +688,27 @@ async def discover_bulbs():
 
 
 async def resolve_bulb_ip(ip: str) -> str:
-    """Try the given IP first; if unreachable, auto-discover a KL125 on the network."""
+    """Try the given IP first; if unreachable, auto-discover the paired bulb.
+
+    Self-healing: when the bulb is re-found at a new IP (DHCP change), the
+    pairing config is rewritten so the next run connects directly.
+    """
     try:
         bulb = await Device.connect(host=ip)
         await bulb.update()
         return ip
     except (OSError, KasaException, ConnectionError, asyncio.TimeoutError):
         print(f"  Bulb unreachable at {ip}, scanning network...")
+        paired_mac = (load_bulb_config().get("mac") or "").upper()
         devices = await Discover.discover()
         for addr, dev in devices.items():
             await dev.update()
-            if "KL125" in (dev.model or ""):
+            mac = (getattr(dev, "mac", "") or "").upper()
+            if (paired_mac and mac == paired_mac) or "KL125" in (dev.model or ""):
                 print(f"  Found {dev.alias} at {addr} (was {ip})")
+                save_bulb_config(addr, mac=mac, alias=dev.alias, model=dev.model)
                 return addr
-        print(f"  No KL125 bulb found on network.")
+        print(f"  No paired bulb found on network. Run: sol pair")
         raise SystemExit(1)
 
 
@@ -782,6 +824,9 @@ async def run_sunrise(ip: str, profile: str = "standard", verbose: bool = True, 
 
         for step in range(steps):
             progress = step / steps
+            if phase.get("ease"):
+                # Smoothstep: gentle start and end, steepest in the middle (bell-ish ramp)
+                progress = progress * progress * (3 - 2 * progress)
             brightness = int(start_b + (end_b - start_b) * progress)
             temp = int(start_t + (end_t - start_t) * progress)
 
@@ -804,6 +849,13 @@ async def run_sunrise(ip: str, profile: str = "standard", verbose: bool = True, 
     if verbose:
         print()  # Clear the progress line
         show_sunrise_complete()
+
+    # Post-sunrise hold: shift to a steady state (e.g. warm light) until auto-off
+    post = config.get("post")
+    if post:
+        await light.set_brightness(post["brightness"])
+        await light.set_color_temp(post["temp"])
+        print(f"\n  Holding at {post['brightness']}% / {post['temp']}K until auto-off.")
 
     # Schedule auto-off after sunrise
     if auto_off_hours > 0:
@@ -1027,7 +1079,7 @@ def resolve_auto_off(args) -> float:
 
 async def cmd_now(args):
     """Handle 'now' command - immediate sunrise."""
-    ip = await resolve_bulb_ip(args.ip or DEFAULT_BULB_IP)
+    ip = await resolve_bulb_ip(args.ip or default_bulb_ip())
     await run_sunrise(ip, args.profile, auto_off_hours=resolve_auto_off(args),
                       duration_override=getattr(args, 'duration', None),
                       end_temp_override=getattr(args, 'end_temp', None))
@@ -1035,7 +1087,7 @@ async def cmd_now(args):
 
 async def cmd_at(args):
     """Handle 'at' command - scheduled sunrise."""
-    ip = await resolve_bulb_ip(args.ip or DEFAULT_BULB_IP)
+    ip = await resolve_bulb_ip(args.ip or default_bulb_ip())
     await schedule_sunrise(args.time, ip, args.profile, auto_off_hours=resolve_auto_off(args),
                            duration_override=getattr(args, 'duration', None),
                            end_temp_override=getattr(args, 'end_temp', None))
@@ -1043,7 +1095,7 @@ async def cmd_at(args):
 
 async def cmd_up(args):
     """Handle 'up' command - wake up at specified time (sunrise ends then)."""
-    ip = await resolve_bulb_ip(args.ip or DEFAULT_BULB_IP)
+    ip = await resolve_bulb_ip(args.ip or default_bulb_ip())
     config = SUNRISE_PROFILES.get(args.profile, SUNRISE_PROFILES["standard"])
     duration_minutes = getattr(args, 'duration', None) or config["duration_minutes"]
 
@@ -1071,7 +1123,7 @@ async def cmd_up(args):
 
 async def cmd_rise(args):
     """Handle 'rise' command - sunrise starts at specified time."""
-    ip = await resolve_bulb_ip(args.ip or DEFAULT_BULB_IP)
+    ip = await resolve_bulb_ip(args.ip or default_bulb_ip())
     config = SUNRISE_PROFILES.get(args.profile, SUNRISE_PROFILES["standard"])
     duration_minutes = getattr(args, 'duration', None) or config["duration_minutes"]
 
@@ -1098,7 +1150,7 @@ async def cmd_rise(args):
 
 async def cmd_demo(args):
     """Handle 'demo' command."""
-    ip = await resolve_bulb_ip(args.ip or DEFAULT_BULB_IP)
+    ip = await resolve_bulb_ip(args.ip or default_bulb_ip())
     await run_demo(ip)
 
 
@@ -1120,9 +1172,47 @@ async def cmd_discover(args):
         print()
 
 
+async def cmd_pair(args):
+    """Discover the bulb and save its identity for permanent easy connection."""
+    print("Scanning network for Kasa bulbs...")
+    devices = await Discover.discover(discovery_timeout=8)
+    bulbs = []
+    for addr, dev in devices.items():
+        try:
+            await dev.update()
+        except KasaException:
+            continue
+        if dev.device_type.name in ("Bulb", "LightStrip") or "KL" in (dev.model or ""):
+            bulbs.append((addr, dev))
+
+    if not bulbs:
+        print("\nNo Kasa bulbs found.")
+        print("  - Bulb must be powered on and on the SAME WiFi network as this Mac")
+        print("  - Kasa bulbs only join 2.4GHz WiFi")
+        print("  - To move it onto this network without the app: sol-adopt")
+        raise SystemExit(1)
+
+    if len(bulbs) > 1:
+        print(f"\nFound {len(bulbs)} bulbs:")
+        for i, (addr, dev) in enumerate(bulbs, 1):
+            print(f"  {i}. {dev.alias} ({dev.model}) at {addr}")
+        choice = input("Pair which one? [1]: ").strip() or "1"
+        addr, dev = bulbs[int(choice) - 1]
+    else:
+        addr, dev = bulbs[0]
+
+    mac = (getattr(dev, "mac", "") or "").upper()
+    save_bulb_config(addr, mac=mac, alias=dev.alias, model=dev.model)
+    print(f"\nPaired: {dev.alias} ({dev.model})")
+    print(f"  IP:  {addr}")
+    print(f"  MAC: {mac}")
+    print(f"  Saved to {CONFIG_FILE.name} — all commands now use this bulb automatically.")
+    print(f"\nTip: give the bulb a fixed IP in your router so this never changes.")
+
+
 async def cmd_off(args):
     """Turn off the bulb."""
-    ip = await resolve_bulb_ip(args.ip or DEFAULT_BULB_IP)
+    ip = await resolve_bulb_ip(args.ip or default_bulb_ip())
     bulb = await connect_bulb(ip, label="bulb")
     await bulb.turn_off()
     print(f"Turned off bulb at {ip}")
@@ -1130,7 +1220,7 @@ async def cmd_off(args):
 
 async def cmd_status(args):
     """Show bulb connection status and info."""
-    ip = await resolve_bulb_ip(args.ip or DEFAULT_BULB_IP)
+    ip = await resolve_bulb_ip(args.ip or default_bulb_ip())
     print(f"Checking bulb at {ip}...\n")
     info = await check_bulb_status(ip)
     if info is None:
@@ -1452,6 +1542,10 @@ Profiles: standard (30min), quick (20min), gentle (45min)
     discover_parser = subparsers.add_parser("discover", help="Find Kasa devices on network")
     discover_parser.set_defaults(func=cmd_discover)
 
+    # 'pair' - discover and save bulb identity
+    pair_parser = subparsers.add_parser("pair", help="Discover bulb and save it for automatic connection")
+    pair_parser.set_defaults(func=cmd_pair)
+
     # 'off' - turn off
     off_parser = subparsers.add_parser("off", help="Turn off the bulb")
     off_parser.add_argument("--ip", help=f"Bulb IP address (default: {DEFAULT_BULB_IP})")
@@ -1503,8 +1597,8 @@ Profiles: standard (30min), quick (20min), gentle (45min)
     except KeyboardInterrupt:
         print("\n  Interrupted. Turning off lamp...")
         asyncio.run(safe_turn_off())
-    except SystemExit:
-        pass  # connect_bulb already printed diagnostics
+    except SystemExit as e:
+        sys.exit(e.code)  # propagate failure exit code; diagnostics already printed
     except (OSError, KasaException, ConnectionError) as e:
         print(f"\n  Connection error: {e}")
         print(f"  Check that the bulb is powered on and reachable.")
