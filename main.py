@@ -1189,7 +1189,7 @@ async def cmd_pair(args):
         print("\nNo Kasa bulbs found.")
         print("  - Bulb must be powered on and on the SAME WiFi network as this Mac")
         print("  - Kasa bulbs only join 2.4GHz WiFi")
-        print("  - To move it: Kasa app > device > Settings > Remove, then re-add on this network")
+        print("  - To move it onto this network without the app: sol-adopt")
         raise SystemExit(1)
 
     if len(bulbs) > 1:
